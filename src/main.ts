@@ -2,8 +2,9 @@ import './style.css';
 import QRCode from 'qrcode';
 import { sfx, setSound } from './audio';
 import { planCpuShot, runCpuShot, type CpuPlan } from './game/ai';
+import { boosted, levelOf, levelProgress, statsOf, MAX_LEVEL } from './game/evolve';
 import { LEVELS, DUEL_LENGTH } from './game/levels';
-import { PACKS, getPack, isUnlocked, teamOf, type Pack } from './game/packs';
+import { PACKS, getPack, isUnlocked, teamOf, type CharDef, type Pack } from './game/packs';
 import {
   createMatch,
   flick,
@@ -18,7 +19,8 @@ import {
   type Match,
   type Owner,
 } from './game/sim';
-import { portrait } from './render/draw';
+import { portrait } from './figures/sprites';
+import { Fx } from './render/fx';
 import { Renderer2D } from './render/render2d';
 import type { AimView, Renderer } from './render/types';
 import { load, save } from './storage';
@@ -30,6 +32,8 @@ const stage = document.getElementById('stage')!;
 const hud = document.getElementById('hud')!;
 const screen = document.getElementById('screen')!;
 const toastEl = document.getElementById('toast')!;
+const fx = new Fx();
+document.getElementById('app')!.insertBefore(fx.canvas, hud);
 
 // ---------- Rendering ----------
 
@@ -78,6 +82,44 @@ interface AimDrag {
 let drag: AimDrag | null = null;
 let aim: AimView | null = null;
 
+// ---------- Teams and evolution ----------
+
+function xpOf(id: string) {
+  return data.xp[id] ?? 0;
+}
+
+function chosenIds(packId: string): string[] {
+  const pack = getPack(packId);
+  const saved = (data.teams[packId] ?? []).filter((id) => pack.chars.some((c) => c.id === id));
+  return saved.length ? saved : pack.chars.slice(0, 5).map((c) => c.id);
+}
+
+/** Your 5 pieces: the characters you picked (repeated if fewer than 5), with their level bonuses. */
+function myTeam(packId: string): CharDef[] {
+  const pack = getPack(packId);
+  const chars = chosenIds(packId).map((id) => pack.chars.find((c) => c.id === id)!);
+  return Array.from({ length: 5 }, (_, i) => {
+    const ch = chars[i % chars.length];
+    return boosted(ch, levelOf(xpOf(ch.id)));
+  });
+}
+
+function gainXp(charId: string, amount: number) {
+  const before = levelOf(xpOf(charId));
+  data.xp[charId] = xpOf(charId) + amount;
+  save(data);
+  const after = levelOf(xpOf(charId));
+  if (after > before) {
+    const ch = PACKS.flatMap((p) => p.chars).find((c) => c.id === charId);
+    if (ch) {
+      window.setTimeout(() => {
+        toast(`${ch.name} evoluiu! Nível ${after}`, 'good');
+        sfx.win();
+      }, 1400);
+    }
+  }
+}
+
 function startSolo(n: number) {
   const lv = LEVELS[n - 1];
   level = n;
@@ -85,7 +127,7 @@ function startSolo(n: number) {
     mode: 'solo',
     level: n,
     length: lv.length,
-    teams: [teamOf(getPack(data.soloPack)), teamOf(getPack(lv.cpuPack))],
+    teams: [myTeam(data.soloPack), teamOf(getPack(lv.cpuPack))],
     names: ['Você', 'Computador'],
     cpu: [false, true],
     missRule: data.missRule,
@@ -100,7 +142,7 @@ function startDuel() {
   match = createMatch({
     mode: 'duel',
     length: DUEL_LENGTH,
-    teams: [teamOf(getPack(data.duelPacks[0])), teamOf(getPack(data.duelPacks[1]))],
+    teams: [myTeam(data.duelPacks[0]), myTeam(data.duelPacks[1])],
     names: [data.names[0] || 'Jogador 1', data.names[1] || 'Jogador 2'],
     cpu: [false, false],
     missRule: data.missRule,
@@ -119,6 +161,7 @@ function beginMatch() {
   cpuPlan = null;
   aim = null;
   drag = null;
+  fx.clear();
   hideScreen();
   hud.hidden = false;
   updateHud();
@@ -251,12 +294,16 @@ function frame(now: number) {
       if (overTimer > 1.3) showResult(m);
     }
   }
+  const shown = m ?? idle;
   if (m) {
     const showAim = m.phase === 'aim' ? aim : null;
     renderer.render(m, showAim, viewOwner, dt);
   } else {
     renderIdle(dt);
   }
+  fx.update(dt);
+  if (shown) fx.draw((x, y, h) => renderer.worldToScreen(x, y, h), renderer.pxPerUnit(shown.W / 2, shown.L / 2));
+  stage.style.transform = fx.shake > 0 ? `translate(${(Math.random() - 0.5) * fx.shake * 14}px, ${(Math.random() - 0.5) * fx.shake * 14}px)` : '';
   requestAnimationFrame(frame);
 }
 
@@ -323,25 +370,41 @@ function runCpu(m: Match, dt: number) {
   }
 }
 
+let lastWord = 0;
 function handleEvents(m: Match) {
   let hudDirty = false;
+  const now = performance.now();
   for (const ev of m.events) {
     switch (ev.type) {
       case 'flick':
         sfx.flick(ev.power);
+        fx.puff(ev.x, ev.y, 6);
         break;
       case 'hit':
         sfx.hit(ev.strength);
+        if (ev.strength > 0.25 && now - lastWord > 350) {
+          fx.word(ev.x, ev.y);
+          fx.shake = Math.min(1, 0.3 + ev.strength);
+          lastWord = now;
+        }
         break;
       case 'topple':
         sfx.topple();
+        fx.burst(ev.x, ev.y, ev.color, 12);
+        break;
+      case 'bump':
+        sfx.bump();
+        fx.puff(ev.x, ev.y, 2);
         break;
       case 'offTable':
         sfx.off();
+        fx.puff(ev.x, ev.y, 4);
         break;
       case 'capture':
         sfx.capture(ev.count);
         toast(m.lastResult, 'good');
+        // In solo only your pieces learn; in a duel both players share this device's collection.
+        if (ev.charId && (m.mode === 'duel' || ev.by === 0)) gainXp(ev.charId, ev.count);
         hudDirty = true;
         break;
       case 'miss':
@@ -368,9 +431,14 @@ function updateHud() {
   if (!m) return;
   const chip = (o: Owner) => {
     const active = m.turn === o && m.phase !== 'over';
+    const team = teamPieces(m, o);
+    const faces = team
+      .slice(0, 10)
+      .map((p) => `<img src="${portrait(p.char)}" alt="" />`)
+      .join('');
     return `<div class="chip team${o} ${active ? 'active' : ''}">
-      <span class="name">${esc(m.names[o])}</span>
-      <span class="count">${teamPieces(m, o).length}</span>
+      <div class="top"><span class="name">${esc(m.names[o])}</span><span class="count">${team.length}</span></div>
+      <div class="faces">${faces}</div>
     </div>`;
   };
   const title = m.mode === 'solo' ? `Fase ${level}` : 'Duelo';
@@ -398,7 +466,7 @@ function updateHud() {
 function hintText(m: Match) {
   if (m.phase === 'over') return '';
   if (m.cpu[m.turn]) return 'O computador está mirando...';
-  return `Vez de <b>${esc(m.names[m.turn])}</b>: puxe o boneco para trás e solte!`;
+  return `<b>${esc(m.names[m.turn])}</b>: puxe para trás e solte!`;
 }
 
 let toastTimer = 0;
@@ -432,10 +500,11 @@ function on(id: string, fn: () => void) {
 function showHome() {
   hud.hidden = true;
   showScreen(
-    `<h1 class="logo"><span class="crown">♛</span>Rei do<br/>Peteleco</h1>
-     <button class="big" id="goSolo">Fases</button>
-     <button class="big" id="goDuel">Duelo</button>
-     <button class="big alt" id="goChars">Personagens</button>
+    `<div class="heroes">${heroes()}</div>
+     <h1 class="logo"><span class="l1">Rei do</span><span class="l2">Peteleco</span></h1>
+     <button class="big" id="goSolo">${ICON.play}Fases</button>
+     <button class="big alt" id="goDuel">${ICON.duel}Duelo</button>
+     <button class="big gold" id="goChars">${ICON.star}Personagens</button>
      <div class="row">
        <button class="small" id="goPhone">Jogar no celular</button>
        <button class="small" id="goSettings">Ajustes</button>
@@ -449,11 +518,23 @@ function showHome() {
   on('goSettings', showSettings);
 }
 
+const ICON = {
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10-6.5a1 1 0 0 0 0-1.7l-10-6.5A1 1 0 0 0 8 5.5z"/></svg>',
+  duel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M4 4l10 10M14 18l4-4M16 20l4-4M4 20l6-6M20 4L10 14M6 14l4 4"/></svg>',
+  star: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.8l2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3L2.9 9.5l6.3-.9z"/></svg>',
+};
+
+function heroes() {
+  const unlocked = PACKS.filter((p) => isUnlocked(p, data.beaten));
+  const picks = [unlocked[0].chars[0], PACKS[2].chars[0], unlocked[0].chars[3], PACKS[1].chars[0], unlocked[0].chars[1]];
+  return picks.map((c, i) => `<img src="${portrait(c)}" alt="" style="animation-delay:${i * 0.15}s" />`).join('');
+}
+
 function packPicker(selected: string, name: string) {
   return `<div class="packs">${PACKS.map((p) => {
     const ok = isUnlocked(p, data.beaten);
     return `<button class="pack ${p.id === selected ? 'sel' : ''}" data-pack="${p.id}" data-group="${name}" ${ok ? '' : 'disabled'}>
-      <img src="${portrait(p.chars[0], 56)}" alt="" />
+      <img src="${portrait(p.chars[0])}" alt="" />
       <span>${ok ? p.name : `Fase ${p.unlockLevel}`}</span>
     </button>`;
   }).join('')}</div>`;
@@ -475,12 +556,14 @@ function showLevels() {
   const next = Math.min(LEVELS.length, data.beaten + 1);
   showScreen(
     `<h2>Fases</h2>
-     <p class="sub">Escolha seu time:</p>
+     <p class="sub">Escolha o pacote e toque nos bonecos do seu time:</p>
      ${packPicker(data.soloPack, 'solo')}
+     ${teamPicker(data.soloPack, 'solo')}
      <div class="levels">${LEVELS.map((lv) => {
        const open = lv.n <= next;
        const done = lv.n <= data.beaten;
        return `<button class="level ${done ? 'done' : ''}" data-level="${lv.n}" ${open ? '' : 'disabled'}>
+         <img src="${portrait(getPack(lv.cpuPack).chars[(lv.n - 1) % 5])}" alt="" />
          <b>${lv.n}</b><span>${open ? lv.name : 'Bloqueada'}</span>${done ? '<i>★</i>' : ''}
        </button>`;
      }).join('')}</div>
@@ -491,6 +574,7 @@ function showLevels() {
     save(data);
     showLevels();
   });
+  bindTeamPicker('solo', showLevels);
   screen.querySelectorAll<HTMLButtonElement>('.level').forEach((b) =>
     b.addEventListener('click', () => {
       sfx.click();
@@ -505,6 +589,7 @@ function showDuelSetup() {
     <div class="side team${o}">
       <input id="name${o}" maxlength="14" value="${esc(data.names[o])}" aria-label="Nome do jogador ${o + 1}" />
       ${packPicker(data.duelPacks[o], `duel${o}`)}
+      ${teamPicker(data.duelPacks[o], `duel${o}`)}
     </div>`;
   showScreen(
     `<h2>Duelo</h2>
@@ -513,7 +598,7 @@ function showDuelSetup() {
      <div class="vs">contra</div>
      ${side(1)}
      ${missRulePicker()}
-     <button class="big" id="start">Começar!</button>
+     <button class="big" id="start">${ICON.play}Começar!</button>
      <button class="back" id="back">Voltar</button>`,
     'wide',
   );
@@ -531,6 +616,10 @@ function showDuelSetup() {
       save(data);
       showDuelSetup();
     });
+    bindTeamPicker(`duel${o}`, () => {
+      keepNames();
+      showDuelSetup();
+    });
   }
   bindMissRule(() => {
     keepNames();
@@ -544,6 +633,45 @@ function showDuelSetup() {
     keepNames();
     showHome();
   });
+}
+
+function levelBadge(id: string) {
+  const lv = levelOf(xpOf(id));
+  return `<span class="lv">Nv ${lv}${lv >= MAX_LEVEL ? ' ★' : ''}</span>`;
+}
+
+function teamPicker(packId: string, group: string) {
+  const pack = getPack(packId);
+  const chosen = chosenIds(packId);
+  return `<div class="team">${pack.chars
+    .map((c) => {
+      const on = chosen.includes(c.id);
+      return `<button class="mate ${on ? 'on' : ''}" data-mate="${c.id}" data-pack="${pack.id}" data-group="${group}">
+        <img src="${portrait(c)}" alt="" />${levelBadge(c.id)}<span>${c.name}</span>
+      </button>`;
+    })
+    .join('')}</div>`;
+}
+
+function bindTeamPicker(group: string, after: () => void) {
+  screen.querySelectorAll<HTMLButtonElement>(`.mate[data-group="${group}"]`).forEach((b) =>
+    b.addEventListener('click', () => {
+      sfx.click();
+      const packId = b.dataset.pack!;
+      const id = b.dataset.mate!;
+      let ids = chosenIds(packId);
+      if (ids.includes(id)) {
+        if (ids.length === 1) return toast('O time precisa de pelo menos 1!');
+        ids = ids.filter((x) => x !== id);
+      } else {
+        if (ids.length >= 5) return toast('Máximo de 5 no time!');
+        ids = [...ids, id];
+      }
+      data.teams[packId] = ids;
+      save(data);
+      after();
+    }),
+  );
 }
 
 function missRulePicker() {
@@ -574,21 +702,29 @@ function showCollection() {
     return `<section class="coll ${ok ? '' : 'locked'}">
       <h3>${p.name}</h3>
       <p>${ok ? p.desc : `Vença a fase ${p.unlockLevel} para ganhar este pacote.`}</p>
-      <div class="chars">${p.chars
-        .map(
-          (c) => `<figure><img src="${portrait(c, 72)}" alt="" /><figcaption>${ok ? c.name : '???'}</figcaption>
-          ${ok ? `<small>Peso ${stars(c.mass, 0.8, 1.9)} · Firmeza ${stars(c.stability, 7, 17)}</small>` : ''}</figure>`,
-        )
-        .join('')}</div>
+      <div class="chars">${p.chars.map((c) => charCard(c, ok)).join('')}</div>
     </section>`;
   };
   showScreen(`<h2>Personagens</h2>${PACKS.map(card).join('')}<button class="back" id="back">Voltar</button>`, 'wide');
   on('back', showHome);
 }
 
-function stars(v: number, lo: number, hi: number) {
-  const n = Math.max(1, Math.min(5, Math.round(1 + ((v - lo) / (hi - lo)) * 4)));
-  return '●'.repeat(n) + '○'.repeat(5 - n);
+function charCard(c: CharDef, unlocked: boolean) {
+  if (!unlocked) return `<figure><img src="${portrait(c)}" alt="" /><figcaption>???</figcaption></figure>`;
+  const xp = xpOf(c.id);
+  const lv = levelOf(xp);
+  const stats = statsOf(boosted(c, lv))
+    .map(
+      (st) => `<div class="stat"><span>${st.label}</span><i>${'<b></b>'.repeat(st.value)}${'<em></em>'.repeat(5 - st.value)}</i></div>`,
+    )
+    .join('');
+  return `<figure class="card">
+    ${levelBadge(c.id)}
+    <img src="${portrait(c)}" alt="" />
+    <figcaption>${c.name}</figcaption>
+    <div class="xp"><div style="width:${Math.round(levelProgress(xp) * 100)}%"></div></div>
+    ${stats}
+  </figure>`;
 }
 
 async function showPhone() {
@@ -678,6 +814,7 @@ function showResult(m: Match) {
     let unlockedHtml = '';
     if (won) {
       sfx.win();
+      fx.celebrate();
       const before = data.beaten;
       data.beaten = Math.max(data.beaten, level);
       save(data);
@@ -686,7 +823,7 @@ function showResult(m: Match) {
         unlockedHtml = fresh
           .map(
             (p) => `<div class="unlock"><p>Novo pacote desbloqueado!</p><h3>${p.name}</h3>
-            <div class="chars">${p.chars.map((c) => `<img src="${portrait(c, 64)}" alt="" />`).join('')}</div></div>`,
+            <div class="chars">${p.chars.map((c) => `<img src="${portrait(c)}" alt="" />`).join('')}</div></div>`,
           )
           .join('');
       }
@@ -707,6 +844,7 @@ function showResult(m: Match) {
     on('again', () => startSolo(level));
   } else {
     sfx.win();
+    fx.celebrate();
     showScreen(
       `<h2>${esc(m.names[w])} venceu!</h2>
        <p class="sub">${esc(m.names[w])} é o Rei do Peteleco desta rodada.</p>

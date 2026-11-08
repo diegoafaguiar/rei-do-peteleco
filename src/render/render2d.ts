@@ -1,8 +1,11 @@
-// Table seen from above, drawn on a 2D canvas.
+// Table seen from above. The figures are pictures of the 3D toys, standing up.
 
-import { forward, launchY, type Match, type Owner } from '../game/sim';
-import { drawChar } from './draw';
+import { getSprite } from '../figures/sprites';
+import type { Match, Owner, Piece } from '../game/sim';
+import { matCanvas, roundRect } from './mat';
 import { HUD_TOP, type AimView, type Renderer } from './types';
+
+const SPRITE_HEIGHT = 0.8; // how much a unit of height lifts on screen
 
 export class Renderer2D implements Renderer {
   readonly kind = '2d' as const;
@@ -15,6 +18,7 @@ export class Renderer2D implements Renderer {
   private L = 100;
   private view: Owner = 0;
   private time = 0;
+  private bg: HTMLCanvasElement | null = null;
 
   mount(el: HTMLElement) {
     el.appendChild(this.canvas);
@@ -31,22 +35,23 @@ export class Renderer2D implements Renderer {
     if (this.canvas.width !== Math.round(cw * dpr) || this.canvas.height !== Math.round(ch * dpr)) {
       this.canvas.width = Math.round(cw * dpr);
       this.canvas.height = Math.round(ch * dpr);
+      this.bg = null;
     }
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.W = m.W;
     this.L = m.L;
-    const pad = 16;
-    const top = HUD_TOP + 8;
-    const bottom = 56;
+    const pad = 22;
+    const top = HUD_TOP + 22;
+    const bottom = 64;
     this.scale = Math.min((cw - pad * 2) / m.W, (ch - top - bottom) / m.L);
     this.ox = (cw - m.W * this.scale) / 2;
     this.oy = top + (ch - top - bottom - m.L * this.scale) / 2;
   }
 
-  worldToScreen(x: number, y: number) {
+  worldToScreen(x: number, y: number, h = 0) {
     const s = this.scale;
-    if (this.view === 0) return { x: this.ox + x * s, y: this.oy + (this.L - y) * s };
-    return { x: this.ox + (this.W - x) * s, y: this.oy + y * s };
+    if (this.view === 0) return { x: this.ox + x * s, y: this.oy + (this.L - y) * s - h * s * SPRITE_HEIGHT };
+    return { x: this.ox + (this.W - x) * s, y: this.oy + y * s - h * s * SPRITE_HEIGHT };
   }
 
   screenToWorld(sx: number, sy: number) {
@@ -55,11 +60,35 @@ export class Renderer2D implements Renderer {
     return { x: this.W - (sx - this.ox) / s, y: (sy - this.oy) / s };
   }
 
-  /** Screen angle of a world direction. */
-  private screenAngle(dx: number, dy: number) {
-    const a = this.worldToScreen(0, 0);
-    const b = this.worldToScreen(dx, dy);
-    return Math.atan2(b.y - a.y, b.x - a.x);
+  pxPerUnit() {
+    return this.scale;
+  }
+
+  private background(cw: number, ch: number) {
+    if (this.bg) return this.bg;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(cw * dpr);
+    cv.height = Math.round(ch * dpr);
+    const ctx = cv.getContext('2d')!;
+    ctx.scale(dpr, dpr);
+    const g = ctx.createLinearGradient(0, 0, 0, ch);
+    g.addColorStop(0, '#7b5cff');
+    g.addColorStop(0.55, '#a77bff');
+    g.addColorStop(1, '#ff9ecd');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, cw, ch);
+    // Floating bubbles
+    let seed = 7;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < 26; i++) {
+      ctx.fillStyle = `rgba(255,255,255,${0.05 + rnd() * 0.1})`;
+      ctx.beginPath();
+      ctx.arc(rnd() * cw, rnd() * ch, 10 + rnd() * 60, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    this.bg = cv;
+    return cv;
   }
 
   render(m: Match, aim: AimView | null, viewOwner: Owner, dt: number) {
@@ -71,96 +100,140 @@ export class Renderer2D implements Renderer {
     const chh = this.canvas.clientHeight;
     const s = this.scale;
 
-    // Room floor
-    const bg = ctx.createLinearGradient(0, 0, 0, chh);
-    bg.addColorStop(0, '#1e3a5f');
-    bg.addColorStop(1, '#0f2238');
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, cw, chh);
+    ctx.drawImage(this.background(cw, chh), 0, 0, cw, chh);
 
-    // Table
-    const tl = { x: this.ox, y: this.oy };
+    // Wooden frame + mat
     const tw = m.W * s;
     const th = m.L * s;
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    roundRect(ctx, tl.x + 6, tl.y + 8, tw, th, 14);
-    ctx.fill();
-    const wood = ctx.createLinearGradient(tl.x, 0, tl.x + tw, 0);
-    wood.addColorStop(0, '#c58b4f');
-    wood.addColorStop(0.5, '#d9a066');
-    wood.addColorStop(1, '#c08447');
+    const frame = Math.max(8, s * 2.2);
+    ctx.save();
+    ctx.shadowColor = 'rgba(40,10,80,0.45)';
+    ctx.shadowBlur = 30;
+    ctx.shadowOffsetY = 14;
+    const wood = ctx.createLinearGradient(this.ox, 0, this.ox + tw, 0);
+    wood.addColorStop(0, '#b86b2e');
+    wood.addColorStop(0.5, '#e09a52');
+    wood.addColorStop(1, '#b86b2e');
     ctx.fillStyle = wood;
-    roundRect(ctx, tl.x, tl.y, tw, th, 14);
+    roundRect(ctx, this.ox - frame, this.oy - frame, tw + frame * 2, th + frame * 2, frame * 1.6);
     ctx.fill();
-    ctx.strokeStyle = '#7a4a22';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-    // Wood grain
-    ctx.strokeStyle = 'rgba(122,74,34,0.18)';
-    ctx.lineWidth = 1;
-    for (let i = 1; i < 9; i++) {
-      const x = tl.x + (tw * i) / 9;
-      ctx.beginPath();
-      ctx.moveTo(x, tl.y + 4);
-      ctx.lineTo(x + Math.sin(i) * 6, tl.y + th - 4);
-      ctx.stroke();
-    }
-
-    // Flick lines and middle line
-    ctx.setLineDash([8, 8]);
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
     ctx.lineWidth = 2;
-    for (const owner of [0, 1] as Owner[]) {
-      const y = launchY(m, owner);
-      const a = this.worldToScreen(2, y);
-      const b = this.worldToScreen(m.W - 2, y);
-      ctx.strokeStyle = owner === 0 ? 'rgba(59,130,246,0.7)' : 'rgba(239,68,68,0.7)';
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-    const ma = this.worldToScreen(0, m.L / 2);
-    const mb = this.worldToScreen(m.W, m.L / 2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.beginPath();
-    ctx.moveTo(ma.x, ma.y);
-    ctx.lineTo(mb.x, mb.y);
+    roundRect(ctx, this.ox - frame + 3, this.oy - frame + 3, tw + frame * 2 - 6, th + frame * 2 - 6, frame * 1.4);
     ctx.stroke();
 
-    // Aim guide (drawn under the pieces)
+    ctx.save();
+    roundRect(ctx, this.ox, this.oy, tw, th, frame * 0.8);
+    ctx.clip();
+    if (viewOwner === 0) {
+      ctx.drawImage(matCanvas(m.L), this.ox, this.oy, tw, th);
+    } else {
+      ctx.translate(this.ox + tw, this.oy + th);
+      ctx.rotate(Math.PI);
+      ctx.drawImage(matCanvas(m.L), 0, 0, tw, th);
+    }
+    ctx.restore();
+    // Inner shadow along the frame
+    ctx.strokeStyle = 'rgba(80,30,0,0.25)';
+    ctx.lineWidth = 3;
+    roundRect(ctx, this.ox + 1.5, this.oy + 1.5, tw - 3, th - 3, frame * 0.8);
+    ctx.stroke();
+
     if (aim) this.drawAim(m, aim);
 
-    // Pieces: back to front
+    // Shadows and team rings first, then the figures back to front.
     const pieces = [...m.pieces].sort((a, b) => this.worldToScreen(a.x, a.y).y - this.worldToScreen(b.x, b.y).y);
-    for (const p of pieces) {
-      const sp = this.worldToScreen(p.x, p.y);
-      const r = p.char.radius * s;
-      const canPick = m.phase === 'aim' && p.owner === m.turn && !m.cpu[m.turn];
-      if (p.id === m.selected) {
-        ctx.strokeStyle = '#fde047';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(sp.x, sp.y, r + 4 + Math.sin(this.time * 6) * 1.5, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (canPick) {
-        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(sp.x, sp.y, r + 3, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      // Team marker ring
-      if (p.fallT < 0.5 && !p.out) {
-        ctx.fillStyle = p.owner === 0 ? '#3b82f6' : '#ef4444';
-        ctx.beginPath();
-        ctx.arc(sp.x, sp.y, r + Math.max(3, r * 0.22), 0, Math.PI * 2);
-        ctx.fill();
-      }
-      const face = this.screenAngle(0, forward(p.owner));
-      const fall = this.screenAngle(Math.cos(p.fallDir), Math.sin(p.fallDir));
-      const shrink = p.out ? 1 - p.outT * 0.6 : 1;
-      drawChar(ctx, p.char, sp.x, sp.y, r * shrink, face, p.fallT, fall, p.out ? 1 - p.outT : 1);
+    for (const p of pieces) this.drawBase(m, p);
+    for (const p of pieces) this.drawFigure(m, p, viewOwner);
+  }
+
+  private drawBase(m: Match, p: Piece) {
+    if (p.out) return;
+    const ctx = this.ctx;
+    const sp = this.worldToScreen(p.x, p.y);
+    const r = p.char.radius * this.scale;
+    const lying = p.fallT;
+    // Shadow (shrinks while the piece is in the air)
+    const air = Math.max(0.5, 1 - p.h * 0.15);
+    ctx.fillStyle = `rgba(40,20,70,${0.28 * air})`;
+    ctx.beginPath();
+    ctx.ellipse(sp.x + r * 0.15, sp.y + r * 0.1, r * (1.05 + lying * 0.9) * air, r * 0.62 * air, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (lying > 0.5 || p.h > 0.3) return;
+    // Team ring
+    ctx.lineWidth = Math.max(2.5, r * 0.22);
+    ctx.strokeStyle = p.owner === 0 ? '#2f6fe0' : '#e0405a';
+    ctx.beginPath();
+    ctx.ellipse(sp.x, sp.y, r * 1.12, r * 0.7, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    if (p.id === m.selected) {
+      const pulse = 1 + Math.sin(this.time * 6) * 0.08;
+      ctx.lineWidth = Math.max(3, r * 0.25);
+      ctx.strokeStyle = '#ffe14d';
+      ctx.beginPath();
+      ctx.ellipse(sp.x, sp.y, r * 1.45 * pulse, r * 0.92 * pulse, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  private drawFigure(m: Match, p: Piece, viewOwner: Owner) {
+    const ctx = this.ctx;
+    const s = this.scale;
+    const r = p.char.radius;
+    // Your own team shows its back; the other team looks at you.
+    const sprite = getSprite(p.char, p.owner === viewOwner ? 'back' : 'front');
+    const k = (r * s) / sprite.unitPx; // sprite pixels -> screen pixels
+    let hop = 0;
+    if (p.id === m.selected) hop = Math.abs(Math.sin(this.time * 5)) * r * s * 0.25;
+    const sp = this.worldToScreen(p.x, p.y, p.h);
+
+    ctx.save();
+    ctx.translate(sp.x, sp.y - hop);
+    if (p.roll !== 0) {
+      // Tumbling: spin the picture around its middle, the way it's moving across the screen.
+      const ahead = this.worldToScreen(p.x + Math.cos(p.rollDir), p.y + Math.sin(p.rollDir));
+      const base = this.worldToScreen(p.x, p.y);
+      const sx = ahead.x - base.x;
+      const sy = ahead.y - base.y;
+      // Moving up/down the screen looks like a flip (squash), sideways looks like a spin.
+      const side = Math.abs(sx) / (Math.hypot(sx, sy) || 1);
+      const mid = r * s * 0.95;
+      ctx.translate(0, -mid);
+      ctx.rotate(Math.sign(sx || 1) * p.roll * side);
+      ctx.scale(1, 1 - (1 - Math.abs(Math.cos(p.roll))) * (1 - side) * 0.55);
+      ctx.translate(0, mid);
+    }
+    if (p.out) {
+      const t = p.outT;
+      ctx.globalAlpha = 1 - t;
+      ctx.scale(1 - t * 0.6, 1 - t * 0.6);
+    }
+    if (p.fallT > 0) {
+      // Tip over sideways, toward the side it was hit from.
+      const dirScreen = this.worldToScreen(p.x + Math.cos(p.fallDir), p.y + Math.sin(p.fallDir));
+      const side = dirScreen.x >= sp.x ? 1 : -1;
+      const t = easeOutBounce(p.fallT);
+      ctx.rotate(side * t * Math.PI * 0.5);
+    }
+    if (p.char.fig.style === 'jelly') ctx.globalAlpha *= 0.92;
+    ctx.drawImage(sprite.canvas, -sprite.anchorX * k, -sprite.anchorY * k, sprite.canvas.width * k, sprite.canvas.height * k);
+    ctx.restore();
+
+    // A little bouncing arrow over the piece you can flick.
+    if (p.id === m.selected && !m.cpu[m.turn]) {
+      const top = this.worldToScreen(p.x, p.y, r * 3.4);
+      const bob = Math.sin(this.time * 5) * 4;
+      ctx.fillStyle = '#ffe14d';
+      ctx.strokeStyle = '#7a3e00';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(top.x - 8, top.y - 12 + bob);
+      ctx.lineTo(top.x + 8, top.y - 12 + bob);
+      ctx.lineTo(top.x, top.y + bob);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
     }
   }
 
@@ -170,46 +243,72 @@ export class Renderer2D implements Renderer {
     const pull = this.worldToScreen(aim.pullX, aim.pullY);
 
     // Rubber band to the finger
-    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 5;
     ctx.beginPath();
     ctx.moveTo(from.x, from.y);
     ctx.lineTo(pull.x, pull.y);
     ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(pull.x, pull.y, 9, 0, Math.PI * 2);
+    ctx.fill();
 
-    // Dotted guide in the flick direction
+    // Guide dots in the flick direction, ending in an arrow
     const len = m.L * 0.85 * m.guide * Math.max(0.15, aim.power);
-    const steps = 18;
+    const steps = 14;
+    const hue = 120 - aim.power * 120;
     for (let i = 1; i <= steps; i++) {
       const t = (i / steps) * len;
       const p = this.worldToScreen(aim.x + aim.dx * t, aim.y + aim.dy * t);
-      ctx.fillStyle = `rgba(255,255,255,${0.9 - (i / steps) * 0.7})`;
+      ctx.fillStyle = `hsla(${hue},90%,60%,${1 - (i / steps) * 0.6})`;
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, 5 - (i / steps) * 2, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
     }
-
-    // Power bar next to the piece
-    const bw = 70;
-    const bh = 10;
-    const bx = from.x - bw / 2;
-    const by = from.y + 26;
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    roundRect(ctx, bx - 2, by - 2, bw + 4, bh + 4, 6);
+    const end = this.worldToScreen(aim.x + aim.dx * len, aim.y + aim.dy * len);
+    const prev = this.worldToScreen(aim.x + aim.dx * (len - 1), aim.y + aim.dy * (len - 1));
+    const ang = Math.atan2(end.y - prev.y, end.x - prev.x);
+    ctx.save();
+    ctx.translate(end.x, end.y);
+    ctx.rotate(ang);
+    ctx.fillStyle = `hsl(${hue},90%,55%)`;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(12, 0);
+    ctx.lineTo(-6, -10);
+    ctx.lineTo(-6, 10);
+    ctx.closePath();
     ctx.fill();
-    const hue = 120 - aim.power * 120;
-    ctx.fillStyle = `hsl(${hue},85%,50%)`;
-    roundRect(ctx, bx, by, bw * aim.power, bh, 5);
+    ctx.stroke();
+    ctx.restore();
+
+    // Power meter beside the piece
+    const bw = 16;
+    const bh = 80;
+    const bx = from.x + 34;
+    const by = from.y - bh + 10;
+    ctx.fillStyle = 'rgba(30,10,60,0.55)';
+    roundRect(ctx, bx - 3, by - 3, bw + 6, bh + 6, 10);
+    ctx.fill();
+    const grad = ctx.createLinearGradient(0, by + bh, 0, by);
+    grad.addColorStop(0, '#4cd07d');
+    grad.addColorStop(0.5, '#ffd23f');
+    grad.addColorStop(1, '#ff4d4d');
+    ctx.fillStyle = grad;
+    const fillH = bh * aim.power;
+    roundRect(ctx, bx, by + bh - fillH, bw, fillH, 7);
     ctx.fill();
   }
 }
 
-export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+function easeOutBounce(t: number) {
+  if (t < 0.7) return (t / 0.7) * (t / 0.7);
+  const u = (t - 0.7) / 0.3;
+  return 1 - Math.sin(u * Math.PI) * 0.08;
 }

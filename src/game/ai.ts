@@ -1,6 +1,6 @@
 // The computer opponent: picks a target, aims with some error, and flicks.
 
-import { FRICTION, flick, forward, getPiece, launchY, setLaunchX, teamPieces, type Match, type Owner } from './sim';
+import { flick, flickSpeed, forward, frictionOf, getPiece, launchY, setLaunchX, teamPieces, type Match, type Owner } from './sim';
 
 function gaussian(): number {
   let u = 0;
@@ -32,8 +32,10 @@ export function planCpuShot(m: Match, angleErrorDeg: number): CpuPlan | null {
 
   // Arrive fast enough to knock it down, with a margin.
   const arrive = (target.char.stability / Math.sqrt(flicker.char.mass / target.char.mass)) * 1.7 + 8;
-  const v0 = Math.sqrt(arrive * arrive + 2 * FRICTION * dist);
-  const power = Math.min(1, (v0 / m.vmax) * (1 + gaussian() * 0.06));
+  // A bit extra for the speed lost each time it lands while tumbling.
+  const v0 = Math.sqrt(arrive * arrive + 2 * frictionOf(flicker.char) * dist) * 1.08;
+  const full = flickSpeed(m, flicker.char, 1);
+  const power = Math.min(1, (v0 / full) * (1 + gaussian() * 0.06));
 
   let dx = Math.cos(angle);
   let dy = Math.sin(angle);

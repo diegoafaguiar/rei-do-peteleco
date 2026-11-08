@@ -24,7 +24,7 @@ const NAMES = [
   'Trono do Rei',
 ];
 
-const CPU_PACKS = ['turma', 'turma', 'monstros', 'monstros', 'gelo', 'gelo', 'xadrez', 'xadrez', 'bola', 'bola', 'evo', 'evo'];
+const CPU_PACKS = ['turma', 'gelatinas', 'monstros', 'selvagens', 'gelo', 'gelo', 'xadrez', 'xadrez', 'bola', 'bola', 'evo', 'evo'];
 
 export const LEVELS: Level[] = NAMES.map((name, i) => {
   const n = i + 1;

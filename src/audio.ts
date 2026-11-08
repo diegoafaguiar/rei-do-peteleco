@@ -38,6 +38,7 @@ export const sfx = {
   unlock: () => ac(),
   flick: (power: number) => tone(500 + power * 500, 0.12, 'triangle', 0.25, 160),
   hit: (strength: number) => tone(180 + strength * 200, 0.08, 'square', 0.12 + strength * 0.15, 90),
+  bump: () => tone(140 + Math.random() * 60, 0.05, 'triangle', 0.07, 90),
   topple: () => tone(320, 0.25, 'sawtooth', 0.12, 80),
   off: () => tone(400, 0.4, 'sine', 0.15, 60),
   capture: (n: number) => {

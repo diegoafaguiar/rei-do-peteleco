@@ -24,14 +24,20 @@ export interface Piece {
   outT: number; // falling-off animation
   tx: number; // where it walks to while arranging
   ty: number;
+  // Tumbling: the toys aren't round, so they flip end over end and hop as they go.
+  roll: number; // how far it has flipped (radians)
+  rollDir: number; // direction of travel the flip follows (radians)
+  h: number; // height above the table while hopping
+  vh: number;
 }
 
 export type GameEvent =
-  | { type: 'flick'; power: number }
-  | { type: 'hit'; strength: number }
-  | { type: 'topple' }
-  | { type: 'offTable' }
-  | { type: 'capture'; count: number; by: Owner }
+  | { type: 'flick'; power: number; x: number; y: number }
+  | { type: 'hit'; strength: number; x: number; y: number }
+  | { type: 'topple'; x: number; y: number; color: string }
+  | { type: 'offTable'; x: number; y: number }
+  | { type: 'capture'; count: number; by: Owner; charId: string }
+  | { type: 'bump'; x: number; y: number }
   | { type: 'miss'; lost: boolean }
   | { type: 'win'; winner: Owner }
   | { type: 'turn'; turn: Owner };
@@ -65,10 +71,11 @@ export interface Match extends MatchOptions {
 export const TABLE_W = 60;
 export const FRICTION = 50; // slowdown of a standing piece, units/s²
 const FALLEN_FRICTION = FRICTION * 2.6;
-const RESTITUTION = 0.5;
+const GRAVITY = 120;
+const SETTLE_SPEED = 8; // below this a piece stops tumbling
 const LINE_EDGE = 5; // distance of the first row from the player's edge
 const ROW_GAP = 6.5;
-const LAUNCH_EDGE = 17; // distance of the flick spot from the player's edge
+export const LAUNCH_EDGE = 17; // distance of the flick spot from the player's edge
 const ARRANGE_TIME = 0.8;
 
 let nextId = 1;
@@ -93,7 +100,8 @@ export function createMatch(opts: MatchOptions): Match {
     flicker: null,
     winner: null,
     events: [],
-    vmax: Math.sqrt(2 * FRICTION * opts.length * 1.1),
+    // Room for heavy pieces (which fly slower) to still reach the far side.
+    vmax: Math.sqrt(2 * FRICTION * opts.length * 1.7),
     timer: 0,
     lastResult: '',
   };
@@ -114,6 +122,10 @@ export function createMatch(opts: MatchOptions): Match {
         outT: 0,
         tx: 0,
         ty: 0,
+        roll: 0,
+        rollDir: 0,
+        h: 0,
+        vh: 0,
       });
     }
   }
@@ -183,16 +195,28 @@ export function flick(m: Match, dx: number, dy: number, power: number) {
   const p = getPiece(m, m.selected);
   if (!p || m.phase !== 'aim') return;
   const len = Math.hypot(dx, dy) || 1;
-  const speed = m.vmax * clamp(power, 0, 1);
+  const speed = flickSpeed(m, p.char, power);
   p.x = p.tx;
   p.y = p.ty;
   p.vx = (dx / len) * speed;
   p.vy = (dy / len) * speed;
+  p.rollDir = Math.atan2(p.vy, p.vx);
+  p.vh = 3 + speed * 0.07 * (0.4 + p.char.bounce);
   m.flicker = p.id;
   m.selected = null;
   m.phase = 'rolling';
   m.timer = 0;
-  m.events.push({ type: 'flick', power });
+  m.events.push({ type: 'flick', power, x: p.x, y: p.y });
+}
+
+/** Same finger strength: light pieces shoot off fast, heavy ones go slower. */
+export function flickSpeed(m: Match, ch: CharDef, power: number) {
+  return m.vmax * clamp(power, 0, 1) * Math.pow(ch.mass, -0.35);
+}
+
+/** Slowdown on the table for this character (some slide, some grip). */
+export function frictionOf(ch: CharDef) {
+  return FRICTION * ch.grip;
 }
 
 export function step(m: Match, dt: number) {
@@ -215,6 +239,8 @@ function stepArrange(m: Match, dt: number) {
     p.x += (p.tx - p.x) * k;
     p.y += (p.ty - p.y) * k;
     p.fallT = Math.max(0, p.fallT - dt * 3);
+    p.roll *= Math.exp(-dt * 8); // stand back up
+    p.h = 0;
   }
   if (m.phase === 'arranging' && m.timer > ARRANGE_TIME) startTurn(m);
 }
@@ -237,20 +263,21 @@ function stepPhysics(m: Match, dt: number) {
   for (const p of active) {
     const speed = Math.hypot(p.vx, p.vy);
     if (speed > 0) {
-      const dec = (p.fallen ? FALLEN_FRICTION : FRICTION) * dt;
+      const dec = (p.fallen ? FALLEN_FRICTION : frictionOf(p.char)) * dt;
       const ns = Math.max(0, speed - dec);
       p.vx *= ns / speed;
       p.vy *= ns / speed;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
     }
+    tumble(m, p, dt);
     if (p.x < 0 || p.x > m.W || p.y < 0 || p.y > m.L) {
       p.out = true;
       if (p.owner !== attacker && !p.fallen) {
         p.fallen = true;
         p.fallDir = Math.atan2(p.vy, p.vx);
       }
-      m.events.push({ type: 'offTable' });
+      m.events.push({ type: 'offTable', x: p.x, y: p.y });
     }
   }
 
@@ -262,6 +289,54 @@ function stepPhysics(m: Match, dt: number) {
       collide(m, a, b);
     }
   }
+}
+
+/**
+ * Non-round toys flip over as they slide. Every time one lands it hops again
+ * and gets knocked a little off its line: more wobble and more speed = less control.
+ */
+function tumble(m: Match, p: Piece, dt: number) {
+  const ch = p.char;
+  const speed = Math.hypot(p.vx, p.vy);
+  if (p.h > 0 || p.vh > 0) {
+    p.vh -= GRAVITY * dt;
+    p.h += p.vh * dt;
+    if (p.h <= 0) {
+      p.h = 0;
+      const impact = -p.vh;
+      p.vh = 0;
+      if (speed > SETTLE_SPEED && !p.fallen) {
+        // Land, lose a little speed, get pushed off course, hop again.
+        const keep = 1 - 0.03 * (1 - ch.bounce);
+        const chaos = ch.wobble * 0.11 * (0.4 + speed / m.vmax);
+        const turn = gaussian() * chaos;
+        const c = Math.cos(turn);
+        const s = Math.sin(turn);
+        const vx = (p.vx * c - p.vy * s) * keep;
+        const vy = (p.vx * s + p.vy * c) * keep;
+        p.vx = vx;
+        p.vy = vy;
+        p.vh = (2 + speed * 0.16) * (0.25 + ch.bounce * 0.75) * (0.7 + Math.random() * 0.6);
+        if (impact > 6) m.events.push({ type: 'bump', x: p.x, y: p.y });
+      }
+    }
+  }
+  if (p.fallen) return;
+  if (speed > SETTLE_SPEED || p.h > 0) {
+    // Flip end over end along the direction of travel.
+    p.rollDir = Math.atan2(p.vy, p.vx);
+    p.roll += (speed * dt) / (ch.radius * 1.15);
+  } else {
+    // Come to rest on whichever side is closest.
+    const target = Math.round(p.roll / (Math.PI / 2)) * (Math.PI / 2);
+    p.roll += (target - p.roll) * Math.min(1, dt * 10);
+  }
+}
+
+function gaussian(): number {
+  let u = 0;
+  while (u === 0) u = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
 }
 
 function collide(m: Match, a: Piece, b: Piece) {
@@ -284,13 +359,22 @@ function collide(m: Match, a: Piece, b: Piece) {
 
   const rel = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny; // closing speed
   if (rel <= 0) return;
-  const impulse = ((1 + RESTITUTION) * rel) / (1 / ma + 1 / mb);
+  const restitution = 0.25 + 0.5 * ((a.char.bounce + b.char.bounce) / 2);
+  const impulse = ((1 + restitution) * rel) / (1 / ma + 1 / mb);
   a.vx -= (impulse / ma) * nx;
   a.vy -= (impulse / ma) * ny;
   b.vx += (impulse / mb) * nx;
   b.vy += (impulse / mb) * ny;
+  // Odd shapes bounce off at odd angles, and the hit sends them hopping.
+  for (const p of [a, b]) {
+    const turn = gaussian() * p.char.wobble * 0.25;
+    const c = Math.cos(turn);
+    const s = Math.sin(turn);
+    [p.vx, p.vy] = [p.vx * c - p.vy * s, p.vx * s + p.vy * c];
+    if (!p.fallen && p.h === 0) p.vh = Math.min(25, rel * 0.12 * (0.3 + p.char.bounce));
+  }
 
-  m.events.push({ type: 'hit', strength: Math.min(1, rel / 60) });
+  m.events.push({ type: 'hit', strength: Math.min(1, rel / 60), x: a.x + nx * a.char.radius, y: a.y + ny * a.char.radius });
   tryTopple(m, b, rel * Math.sqrt(ma / mb), Math.atan2(ny, nx));
   tryTopple(m, a, rel * Math.sqrt(mb / ma), Math.atan2(-ny, -nx));
 }
@@ -300,7 +384,7 @@ function tryTopple(m: Match, p: Piece, impact: number, dir: number) {
   if (impact < p.char.stability) return;
   p.fallen = true;
   p.fallDir = dir;
-  m.events.push({ type: 'topple' });
+  m.events.push({ type: 'topple', x: p.x, y: p.y, color: p.char.color });
 }
 
 function animateFalls(m: Match, dt: number) {
@@ -312,7 +396,7 @@ function animateFalls(m: Match, dt: number) {
 
 function allStill(m: Match): boolean {
   return m.pieces.every(
-    (p) => (p.out && p.outT >= 1) || (Math.hypot(p.vx, p.vy) < 0.5 && (!p.fallen || p.fallT >= 1)),
+    (p) => (p.out && p.outT >= 1) || (Math.hypot(p.vx, p.vy) < 0.5 && p.h === 0 && (!p.fallen || p.fallT >= 1)),
   );
 }
 
@@ -332,6 +416,10 @@ function resolve(m: Match) {
   }
   for (const p of m.pieces) {
     p.vx = p.vy = 0;
+    p.vh = 0;
+    p.h = 0;
+    // Keep the flip angle small so standing back up looks natural.
+    p.roll = ((((p.roll + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI;
     p.fallen = false;
     p.out = false;
     p.outT = 0;
@@ -343,9 +431,9 @@ function resolve(m: Match) {
   const name = m.names[att];
   if (captured.length > 0) {
     m.lastResult = `${name} derrubou ${captured.length}!`;
-    m.events.push({ type: 'capture', count: captured.length, by: att });
+    m.events.push({ type: 'capture', count: captured.length, by: att, charId: flicker?.char.id ?? '' });
   } else {
-    m.lastResult = lost ? `Errou! ${name} perdeu o boneco.` : 'Errou! O boneco volta pra fila.';
+    m.lastResult = lost ? 'Errou! Perdeu o boneco.' : 'Errou! Volta pra fila.';
     m.events.push({ type: 'miss', lost });
   }
   m.flicker = null;

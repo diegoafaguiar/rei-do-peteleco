@@ -3,13 +3,18 @@
 // Mapping: world (x, y) on the table -> three.js (x - W/2, 0, L/2 - y). Up is +Y.
 
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { buildFigure } from '../figures/build';
 import type { CharDef } from '../game/packs';
-import { forward, launchY, type Match, type Owner } from '../game/sim';
+import { forward, type Match, type Owner } from '../game/sim';
+import { matCanvas } from './mat';
 import type { AimView, Renderer } from './types';
 
 interface PieceObj {
   root: THREE.Group; // at the piece position
   tilt: THREE.Group; // rotates when the piece falls
+  spin: THREE.Group; // flips end over end while tumbling (pivot at the middle)
   body: THREE.Group; // turns to face forward
   ring: THREE.Mesh;
   charId: string;
@@ -18,6 +23,8 @@ interface PieceObj {
 
 const std = (color: string, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) =>
   new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.05, ...extra });
+
+const TEAM = ['#2f6fe0', '#e0405a'];
 
 export class Renderer3D implements Renderer {
   readonly kind = '3d' as const;
@@ -43,15 +50,20 @@ export class Renderer3D implements Renderer {
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.canvas = this.renderer.domElement;
 
-    this.scene.background = new THREE.Color('#1e3a5f');
-    this.scene.fog = new THREE.Fog('#1e3a5f', 250, 600);
-    this.scene.add(new THREE.HemisphereLight('#ffffff', '#3a2a1a', 1.1));
-    const sun = new THREE.DirectionalLight('#fff4e0', 1.6);
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.55;
+    this.scene.background = skyTexture();
+    this.scene.fog = new THREE.Fog('#b98cff', 260, 700);
+    const sun = new THREE.DirectionalLight('#fff4e0', 2.4);
     sun.position.set(40, 120, 30);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.radius = 4;
+    sun.shadow.bias = -0.0005;
     const sc = sun.shadow.camera;
     sc.left = -80;
     sc.right = 80;
@@ -60,11 +72,21 @@ export class Renderer3D implements Renderer {
     sc.far = 400;
     this.scene.add(sun);
 
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), std('#2b4a6e'));
+    // Playroom floor with a round rug
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), std('#f2c48d', { roughness: 0.8 }));
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = -40;
     floor.receiveShadow = true;
     this.scene.add(floor);
+    const rug = new THREE.Mesh(new THREE.CircleGeometry(170, 64), std('#7fd1c7', { roughness: 0.95 }));
+    rug.rotation.x = -Math.PI / 2;
+    rug.position.y = -39.9;
+    rug.receiveShadow = true;
+    this.scene.add(rug);
+    const rugRing = new THREE.Mesh(new THREE.RingGeometry(150, 160, 64), std('#ffffff', { roughness: 0.95 }));
+    rugRing.rotation.x = -Math.PI / 2;
+    rugRing.position.y = -39.85;
+    this.scene.add(rugRing);
 
     this.scene.add(this.tableGroup, this.aimGroup);
     this.selRing = new THREE.Mesh(
@@ -88,12 +110,18 @@ export class Renderer3D implements Renderer {
     return new THREE.Vector3(x - this.W / 2, h, this.L / 2 - y);
   }
 
-  worldToScreen(x: number, y: number) {
-    const v = this.toThree(x, y).project(this.camera);
+  worldToScreen(x: number, y: number, h = 0) {
+    const v = this.toThree(x, y, h).project(this.camera);
     return {
       x: ((v.x + 1) / 2) * this.canvas.clientWidth,
       y: ((1 - v.y) / 2) * this.canvas.clientHeight,
     };
+  }
+
+  pxPerUnit(x: number, y: number) {
+    const a = this.worldToScreen(x, y);
+    const b = this.worldToScreen(x + 1, y);
+    return Math.hypot(b.x - a.x, b.y - a.y);
   }
 
   screenToWorld(sx: number, sy: number) {
@@ -108,65 +136,58 @@ export class Renderer3D implements Renderer {
     this.tableGroup.clear();
     this.W = m.W;
     this.L = m.L;
-    const top = new THREE.Mesh(new THREE.BoxGeometry(m.W, 2, m.L), std('#d29a5e', { roughness: 0.7 }));
-    top.position.y = -1;
+    const tex = new THREE.CanvasTexture(matCanvas(m.L));
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 8;
+    const mat = new THREE.Mesh(new THREE.PlaneGeometry(m.W, m.L), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 }));
+    mat.rotation.x = -Math.PI / 2;
+    mat.receiveShadow = true;
+    this.tableGroup.add(mat);
+    const wood = std('#d98a45', { roughness: 0.45 });
+    const top = new THREE.Mesh(new RoundedBoxGeometry(m.W + 7, 3, m.L + 7, 4, 1.4), wood);
+    top.position.y = -1.52;
     top.receiveShadow = true;
+    top.castShadow = true;
     this.tableGroup.add(top);
-    const rim = std('#7a4a22');
-    for (const [w, d, x, z] of [
-      [m.W + 2, 1, 0, m.L / 2 + 0.5],
-      [m.W + 2, 1, 0, -m.L / 2 - 0.5],
-      [1, m.L, m.W / 2 + 0.5, 0],
-      [1, m.L, -m.W / 2 - 0.5, 0],
-    ]) {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(w, 2.4, d), rim);
-      b.position.set(x, -1.2, z);
-      this.tableGroup.add(b);
-    }
     for (const [lx, lz] of [
       [-1, -1],
       [1, -1],
       [-1, 1],
       [1, 1],
     ]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(3, 38, 3), rim);
-      leg.position.set((lx * m.W) / 2.3, -21, (lz * m.L) / 2.15);
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.4, 37, 16), wood);
+      leg.position.set((lx * m.W) / 2.3, -21.5, (lz * m.L) / 2.15);
       leg.castShadow = true;
       this.tableGroup.add(leg);
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(2.4, 16, 12), std(lz > 0 ? TEAM[0] : TEAM[1], { roughness: 0.3 }));
+      ball.position.set((lx * m.W) / 2.3, -38.5, (lz * m.L) / 2.15);
+      this.tableGroup.add(ball);
     }
-    for (const owner of [0, 1] as Owner[]) {
-      const line = new THREE.Mesh(
-        new THREE.PlaneGeometry(m.W - 4, 0.5),
-        new THREE.MeshBasicMaterial({ color: owner === 0 ? '#3b82f6' : '#ef4444', transparent: true, opacity: 0.6 }),
-      );
-      line.rotation.x = -Math.PI / 2;
-      line.position.copy(this.toThree(m.W / 2, launchY(m, owner), 0.02));
-      this.tableGroup.add(line);
-    }
-    const mid = new THREE.Mesh(
-      new THREE.PlaneGeometry(m.W, 0.3),
-      new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.3 }),
-    );
-    mid.rotation.x = -Math.PI / 2;
-    mid.position.y = 0.02;
-    this.tableGroup.add(mid);
   }
 
   private makePiece(ch: CharDef, owner: Owner): PieceObj {
     const root = new THREE.Group();
     const tilt = new THREE.Group();
-    const body = buildCharacter(ch);
-    tilt.add(body);
+    const spin = new THREE.Group();
+    const body = new THREE.Group();
+    const fig = buildFigure(ch.fig);
+    fig.scale.setScalar(ch.radius);
+    const mid = ch.radius * 0.95;
+    spin.position.y = mid;
+    body.position.y = -mid;
+    body.add(fig);
+    spin.add(body);
+    tilt.add(spin);
     root.add(tilt);
     const ring = new THREE.Mesh(
-      new THREE.RingGeometry(ch.radius * 1.02, ch.radius * 1.25, 32),
-      new THREE.MeshBasicMaterial({ color: owner === 0 ? '#3b82f6' : '#ef4444' }),
+      new THREE.RingGeometry(ch.radius * 1.08, ch.radius * 1.32, 40),
+      new THREE.MeshBasicMaterial({ color: TEAM[owner], transparent: true, opacity: 0.9 }),
     );
     ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.03;
+    ring.position.y = 0.04;
     root.add(ring);
     this.scene.add(root);
-    return { root, tilt, body, ring, charId: ch.id, owner };
+    return { root, tilt, spin, body, ring, charId: ch.id, owner };
   }
 
   render(m: Match, aim: AimView | null, viewOwner: Owner, dt: number) {
@@ -192,11 +213,15 @@ export class Renderer3D implements Renderer {
         this.pieces.set(p.id, obj);
       }
       if (obj.owner !== p.owner) {
-        (obj.ring.material as THREE.MeshBasicMaterial).color.set(p.owner === 0 ? '#3b82f6' : '#ef4444');
+        (obj.ring.material as THREE.MeshBasicMaterial).color.set(TEAM[p.owner]);
         obj.owner = p.owner;
       }
       const drop = p.out ? -p.outT * p.outT * 45 : 0;
-      obj.root.position.copy(this.toThree(p.x, p.y, drop));
+      obj.root.position.copy(this.toThree(p.x, p.y, drop + p.h));
+      // Tumble: flip around the middle, along the direction it's sliding.
+      const rdir = new THREE.Vector3(Math.cos(p.rollDir), 0, -Math.sin(p.rollDir));
+      const raxis = new THREE.Vector3(0, 1, 0).cross(rdir).normalize();
+      obj.spin.quaternion.setFromAxisAngle(raxis, p.roll);
       // Face the opponent
       obj.body.rotation.y = forward(p.owner) > 0 ? 0 : Math.PI;
       // Fall: tip over toward the hit direction
@@ -205,7 +230,7 @@ export class Renderer3D implements Renderer {
       const t = easeOut(p.fallT);
       obj.tilt.quaternion.setFromAxisAngle(axis, (t * Math.PI) / 2);
       obj.tilt.position.y = t * p.char.radius * 0.9;
-      obj.ring.visible = p.fallT < 0.3 && !p.out;
+      obj.ring.visible = p.fallT < 0.3 && !p.out && p.h < 0.3;
     }
     for (const [id, obj] of this.pieces) {
       if (!seen.has(id)) {
@@ -302,168 +327,17 @@ function easeOut(t: number) {
   return 1 - (1 - t) * (1 - t);
 }
 
-/** Builds a character from simple shapes. Faces -Z (toward the far side for player 0). */
-function buildCharacter(ch: CharDef): THREE.Group {
-  const g = new THREE.Group();
-  const r = ch.radius;
-  const main = std(ch.color);
-  const accent = std(ch.accent);
-  const add = (mesh: THREE.Mesh) => {
-    mesh.castShadow = true;
-    g.add(mesh);
-    return mesh;
-  };
-
-  const eyes = (headY: number, headR: number, forwardZ = -1) => {
-    const white = std('#ffffff');
-    const black = std('#111111');
-    for (const side of [-1, 1]) {
-      const e = add(new THREE.Mesh(new THREE.SphereGeometry(headR * 0.22, 12, 10), white));
-      e.position.set(side * headR * 0.35, headY + headR * 0.15, forwardZ * headR * 0.85);
-      const p = add(new THREE.Mesh(new THREE.SphereGeometry(headR * 0.11, 10, 8), black));
-      p.position.set(side * headR * 0.35, headY + headR * 0.15, forwardZ * headR * 1.03);
-    }
-  };
-
-  if (ch.shape === 'chess') {
-    const profile = chessProfile(ch.id, r);
-    const lathe = add(new THREE.Mesh(new THREE.LatheGeometry(profile, 32), std(ch.color, { roughness: 0.3 })));
-    lathe.receiveShadow = true;
-    const topY = profile[profile.length - 1].y;
-    if (ch.id === 'rei') {
-      const v = add(new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.6, 0.4), accent));
-      v.position.y = topY + 0.8;
-      const h = add(new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.4, 0.4), accent));
-      h.position.y = topY + 1;
-    } else if (ch.id === 'rainha') {
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2;
-        const s = add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), accent));
-        s.position.set(Math.cos(a) * r * 0.45, topY + 0.2, Math.sin(a) * r * 0.45);
-      }
-    } else if (ch.id === 'torre') {
-      for (let i = 0; i < 4; i++) {
-        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
-        const b = add(new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.9), main));
-        b.position.set(Math.cos(a) * r * 0.55, topY + 0.4, Math.sin(a) * r * 0.55);
-      }
-    } else if (ch.id === 'cavalo') {
-      const head = add(new THREE.Mesh(new THREE.BoxGeometry(r * 0.7, r * 1.2, r * 1.3), main));
-      head.position.set(0, topY + r * 0.4, -r * 0.25);
-      head.rotation.x = -0.4;
-      eyes(topY + r * 0.6, r * 0.45);
-    } else if (ch.id === 'bispo') {
-      const cap = add(new THREE.Mesh(new THREE.SphereGeometry(r * 0.45, 16, 12), main));
-      cap.scale.y = 1.4;
-      cap.position.y = topY + r * 0.4;
-    } else {
-      const ball = add(new THREE.Mesh(new THREE.SphereGeometry(r * 0.55, 16, 12), main));
-      ball.position.y = topY + r * 0.4;
-    }
-    return g;
-  }
-
-  // Base disc
-  add(new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.6, 32), accent)).position.y = 0.3;
-
-  const isBall = ch.shape === 'ball';
-  const bodyH = isBall ? r * 1.0 : r * 1.3;
-  const bodyR = isBall ? r * 0.55 : r * 0.78;
-  const body = add(new THREE.Mesh(new THREE.CylinderGeometry(bodyR * 0.9, bodyR, bodyH, 24), main));
-  body.position.y = 0.6 + bodyH / 2;
-
-  const headR = isBall ? r * 1.0 : r * 0.82;
-  const headY = 0.6 + bodyH + headR * 0.8;
-  const head = add(new THREE.Mesh(new THREE.SphereGeometry(headR, 24, 18), isBall ? std('#f2c49b') : main));
-  head.position.y = headY;
-
-  if (isBall) {
-    const hair = add(new THREE.Mesh(new THREE.SphereGeometry(headR * 1.02, 24, 12, 0, Math.PI * 2, 0, Math.PI * 0.4), std('#3b2314')));
-    hair.position.y = headY;
-    // Shirt number on the back
-    const tex = numberTexture(String(ch.number ?? ''), ch.accent, ch.color);
-    const plate = new THREE.Mesh(new THREE.PlaneGeometry(bodyR * 1.3, bodyH * 0.8), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
-    plate.position.set(0, 0.6 + bodyH / 2, bodyR * 0.98);
-    g.add(plate);
-  }
-
-  eyes(headY, headR);
-
-  if (ch.shape === 'monster') {
-    for (const side of [-1, 1]) {
-      const horn = add(new THREE.Mesh(new THREE.ConeGeometry(headR * 0.25, headR * 0.9, 12), accent));
-      horn.position.set(side * headR * 0.6, headY + headR * 0.85, 0);
-      horn.rotation.z = -side * 0.4;
-    }
-  } else if (ch.shape === 'evo') {
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI + Math.PI;
-      const sp = add(new THREE.Mesh(new THREE.ConeGeometry(headR * 0.22, headR * 0.9, 10), accent));
-      sp.position.set(Math.cos(a) * headR * 0.2, headY + headR * 0.75, Math.sin(a) * headR * 0.2 + headR * 0.3);
-      sp.rotation.x = 0.5;
-      sp.rotation.z = Math.cos(a) * 0.6;
-    }
-    for (const side of [-1, 1]) {
-      const arm = add(new THREE.Mesh(new THREE.SphereGeometry(bodyR * 0.45, 12, 10), main));
-      arm.position.set(side * bodyR * 1.1, 0.6 + bodyH * 0.6, 0);
-    }
-  } else if (ch.shape === 'ice') {
-    const crystal = add(
-      new THREE.Mesh(
-        new THREE.OctahedronGeometry(headR * 0.55),
-        std(ch.accent, { transparent: true, opacity: 0.85, roughness: 0.1, metalness: 0.3 }),
-      ),
-    );
-    crystal.position.y = headY + headR * 1.1;
-    crystal.scale.y = 1.6;
-  } else if (ch.shape === 'king') {
-    const gold = std('#fbbf24', { metalness: 0.6, roughness: 0.25 });
-    const band = add(new THREE.Mesh(new THREE.CylinderGeometry(headR * 0.7, headR * 0.7, headR * 0.35, 24, 1, true), gold));
-    band.position.y = headY + headR * 0.8;
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2;
-      const tip = add(new THREE.Mesh(new THREE.ConeGeometry(headR * 0.16, headR * 0.45, 8), gold));
-      tip.position.set(Math.cos(a) * headR * 0.62, headY + headR * 1.15, Math.sin(a) * headR * 0.62);
-    }
-  } else if (ch.shape === 'buddy') {
-    const cheek = std(ch.accent);
-    for (const side of [-1, 1]) {
-      const c = add(new THREE.Mesh(new THREE.SphereGeometry(headR * 0.15, 10, 8), cheek));
-      c.position.set(side * headR * 0.62, headY - headR * 0.15, -headR * 0.72);
-    }
-  }
-  return g;
-}
-
-function chessProfile(id: string, r: number): THREE.Vector2[] {
-  const h = { rei: 9, rainha: 8.5, torre: 6, cavalo: 5.5, bispo: 7, peao: 4.5 }[id] ?? 5;
-  const pts: [number, number][] = [
-    [0, 0],
-    [r, 0],
-    [r, 0.6],
-    [r * 0.8, 1.0],
-    [r * 0.62, 1.4],
-    [r * 0.42, h * 0.45],
-    [r * 0.38, h * 0.8],
-    [r * 0.62, h * 0.86],
-    [r * 0.62, h * 0.95],
-    [r * (id === 'torre' ? 0.72 : 0.4), h],
-    [0, h],
-  ];
-  return pts.map(([x, y]) => new THREE.Vector2(x, y));
-}
-
-function numberTexture(text: string, color: string, bg: string): THREE.CanvasTexture {
+function skyTexture(): THREE.CanvasTexture {
   const cv = document.createElement('canvas');
-  cv.width = cv.height = 64;
+  cv.width = 4;
+  cv.height = 256;
   const ctx = cv.getContext('2d')!;
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, 64, 64);
-  ctx.fillStyle = color;
-  ctx.font = 'bold 44px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 32, 36);
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, '#7b5cff');
+  g.addColorStop(0.6, '#b98cff');
+  g.addColorStop(1, '#ffb3d9');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 256);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
   return t;

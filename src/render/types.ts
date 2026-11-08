@@ -17,9 +17,12 @@ export interface Renderer {
   /** viewOwner: whose side is closest to the screen. */
   render(m: Match, aim: AimView | null, viewOwner: Owner, dt: number): void;
   screenToWorld(sx: number, sy: number): { x: number; y: number } | null;
-  worldToScreen(x: number, y: number): { x: number; y: number };
+  /** h: height above the table, in world units. */
+  worldToScreen(x: number, y: number, h?: number): { x: number; y: number };
+  /** Rough size of one world unit on screen near (x, y). */
+  pxPerUnit(x: number, y: number): number;
   readonly canvas: HTMLCanvasElement;
 }
 
 /** Space at the top of the screen covered by the scoreboard. */
-export const HUD_TOP = 64;
+export const HUD_TOP = 74;

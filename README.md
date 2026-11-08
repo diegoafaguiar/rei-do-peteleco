@@ -14,7 +14,12 @@ Jogo de peteleco de mesa para jogar no navegador (computador ou celular).
 Modos: **Fases** (contra o computador, a mesa fica mais comprida e o computador mira melhor a cada fase)
 e **Duelo** (duas pessoas no mesmo aparelho). O botão 2D/3D troca a visão a qualquer momento.
 
-Vencer fases desbloqueia pacotes novos de personagens (fases 2, 4, 6, 8, 10 e 12).
+Vencer fases desbloqueia pacotes novos de personagens (fases 1, 2, 3, 4, 6, 8, 10 e 12).
+
+Os bonecos capotam e quicam ao serem petelecados: cada um tem **Peso**, **Firmeza**, **Pulo**,
+**Controle** e **Deslize**, e isso muda a distância, o desvio e a força da batida. Cada boneco
+ganha experiência quando derruba alguém e sobe de nível (até o 5), ficando mais firme e mais
+fácil de controlar. Antes de jogar, escolha quais bonecos do pacote entram no time.
 
 ## Rodar no computador
 
@@ -28,7 +33,10 @@ Abra http://localhost:5173. Para jogar no celular, entre em "Jogar no celular" e
 
 ## Onde mexer
 
-- `src/game/packs.ts`: personagens e pacotes (nome, cor, tamanho, peso, firmeza).
+- `src/game/packs.ts`: personagens e pacotes (nome, visual, tamanho, peso, firmeza).
+  Cada boneco é montado por peças: estilo (`vinyl`, `jelly`, `metal`, `gloss`), corpo, olhos, boca,
+  enfeites na cabeça e extras. Veja as opções em `src/figures/build.ts`.
+- Com `npm run dev` rodando, abra http://localhost:5173/figures.html para ver todos os bonecos de frente e de costas.
 - `src/game/levels.ts`: fases (distância, time do computador, pontaria).
 - `src/game/sim.ts`: regras e física.
 - `src/render/`: desenho 2D e 3D.
