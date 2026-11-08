@@ -19,6 +19,10 @@ export class Renderer2D implements Renderer {
   private view: Owner = 0;
   private time = 0;
   private bg: HTMLCanvasElement | null = null;
+  private lastMatch: Match | null = null;
+  private introT = 1; // 0..1 table pops in at the start of a match
+  private flipT = 1; // 0..1 table spins when the turn passes in a duel
+  private trails = new Map<number, { x: number; y: number }[]>();
 
   mount(el: HTMLElement) {
     el.appendChild(this.canvas);
@@ -93,6 +97,16 @@ export class Renderer2D implements Renderer {
 
   render(m: Match, aim: AimView | null, viewOwner: Owner, dt: number) {
     this.time += dt;
+    if (m !== this.lastMatch) {
+      this.lastMatch = m;
+      this.introT = 0;
+      this.flipT = 1;
+      this.trails.clear();
+    } else if (viewOwner !== this.view) {
+      this.flipT = 0;
+    }
+    this.introT = Math.min(1, this.introT + dt / 0.7);
+    this.flipT = Math.min(1, this.flipT + dt / 0.6);
     this.view = viewOwner;
     this.fit(m);
     const ctx = this.ctx;
@@ -101,6 +115,18 @@ export class Renderer2D implements Renderer {
     const s = this.scale;
 
     ctx.drawImage(this.background(cw, chh), 0, 0, cw, chh);
+
+    // Intro pop and duel spin, around the middle of the table.
+    ctx.save();
+    const cx = this.ox + (m.W * s) / 2;
+    const cy = this.oy + (m.L * s) / 2;
+    const pop = backOut(this.introT);
+    const spin = (1 - easeInOut(this.flipT)) * Math.PI;
+    ctx.globalAlpha = Math.min(1, this.introT * 2);
+    ctx.translate(cx, cy);
+    ctx.rotate(spin);
+    ctx.scale(0.8 + 0.2 * pop, 0.8 + 0.2 * pop);
+    ctx.translate(-cx, -cy);
 
     // Wooden frame + mat
     const tw = m.W * s;
@@ -145,7 +171,42 @@ export class Renderer2D implements Renderer {
     // Shadows and team rings first, then the figures back to front.
     const pieces = [...m.pieces].sort((a, b) => this.worldToScreen(a.x, a.y).y - this.worldToScreen(b.x, b.y).y);
     for (const p of pieces) this.drawBase(m, p);
+    this.drawTrails(m);
     for (const p of pieces) this.drawFigure(m, p, viewOwner);
+    ctx.restore();
+  }
+
+  /** Speed streaks behind sliding pieces. */
+  private drawTrails(m: Match) {
+    const ctx = this.ctx;
+    const alive = new Set<number>();
+    for (const p of m.pieces) {
+      alive.add(p.id);
+      let t = this.trails.get(p.id);
+      const moving = Math.hypot(p.vx, p.vy) > 12 && !p.out;
+      if (!t) {
+        if (!moving) continue;
+        t = [];
+        this.trails.set(p.id, t);
+      }
+      if (moving) t.push({ x: p.x, y: p.y });
+      else t.shift();
+      if (t.length > 10) t.shift();
+      if (t.length === 0) {
+        this.trails.delete(p.id);
+        continue;
+      }
+      const r = p.char.radius * this.scale;
+      for (let i = 0; i < t.length; i++) {
+        const sp = this.worldToScreen(t[i].x, t[i].y);
+        const k = (i + 1) / t.length;
+        ctx.fillStyle = p.owner === 0 ? `rgba(120,170,255,${0.35 * k})` : `rgba(255,130,150,${0.35 * k})`;
+        ctx.beginPath();
+        ctx.ellipse(sp.x, sp.y, r * 0.9 * k, r * 0.55 * k, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    for (const id of this.trails.keys()) if (!alive.has(id)) this.trails.delete(id);
   }
 
   private drawBase(m: Match, p: Piece) {
@@ -305,6 +366,16 @@ export class Renderer2D implements Renderer {
     roundRect(ctx, bx, by + bh - fillH, bw, fillH, 7);
     ctx.fill();
   }
+}
+
+function backOut(t: number) {
+  const c = 1.7;
+  const u = t - 1;
+  return 1 + (c + 1) * u * u * u + c * u * u;
+}
+
+function easeInOut(t: number) {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
 function easeOutBounce(t: number) {

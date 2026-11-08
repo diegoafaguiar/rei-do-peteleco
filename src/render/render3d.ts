@@ -41,6 +41,7 @@ export class Renderer3D implements Renderer {
   private camPos = new THREE.Vector3();
   private camLook = new THREE.Vector3();
   private camReady = false;
+  private lastMatch: Match | null = null;
   private time = 0;
   private raycaster = new THREE.Raycaster();
   private plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -201,6 +202,10 @@ export class Renderer3D implements Renderer {
       this.camera.updateProjectionMatrix();
     }
     if (m.W !== this.W || m.L !== this.L) this.buildTable(m);
+    if (m !== this.lastMatch) {
+      this.lastMatch = m;
+      this.camReady = false; // fly in for the new match
+    }
 
     // Pieces
     const seen = new Set<number>();
@@ -311,7 +316,8 @@ export class Renderer3D implements Renderer {
     }
 
     if (!this.camReady) {
-      this.camPos.copy(pos);
+      // Start high above and behind, then swoop down to the player's seat.
+      this.camPos.copy(pos).add(pos.clone().sub(look).multiplyScalar(0.9)).add(new THREE.Vector3(0, 70, 0));
       this.camLook.copy(look);
       this.camReady = true;
     }

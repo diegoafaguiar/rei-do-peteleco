@@ -12,6 +12,8 @@ export interface Save {
   names: [string, string];
   xp: Record<string, number>; // experience per character id
   teams: Record<string, string[]>; // chosen character ids per pack
+  stars: Record<string, number>; // best stars (1-3) per level
+  music: boolean;
 }
 
 const KEY = 'rei-do-peteleco:v1';
@@ -26,16 +28,18 @@ const DEFAULTS: Save = {
   names: ['Jogador 1', 'Jogador 2'],
   xp: {},
   teams: {},
+  stars: {},
+  music: true,
 };
 
 export function load(): Save {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...DEFAULTS, xp: {}, teams: {}, ...JSON.parse(raw) };
+    if (raw) return { ...DEFAULTS, xp: {}, teams: {}, stars: {}, ...JSON.parse(raw) };
   } catch {
     /* storage blocked: play without saving */
   }
-  return { ...DEFAULTS, xp: {}, teams: {} };
+  return { ...DEFAULTS, xp: {}, teams: {}, stars: {} };
 }
 
 export function save(s: Save) {

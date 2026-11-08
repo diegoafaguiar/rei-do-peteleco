@@ -1,6 +1,6 @@
 import './style.css';
 import QRCode from 'qrcode';
-import { sfx, setSound } from './audio';
+import { sfx, setMusic, setSound } from './audio';
 import { planCpuShot, runCpuShot, type CpuPlan } from './game/ai';
 import { boosted, levelOf, levelProgress, statsOf, MAX_LEVEL } from './game/evolve';
 import { LEVELS, DUEL_LENGTH } from './game/levels';
@@ -19,7 +19,7 @@ import {
   type Match,
   type Owner,
 } from './game/sim';
-import { portrait } from './figures/sprites';
+import { getSprite, portrait } from './figures/sprites';
 import { Fx } from './render/fx';
 import { Renderer2D } from './render/render2d';
 import type { AimView, Renderer } from './render/types';
@@ -32,6 +32,7 @@ const stage = document.getElementById('stage')!;
 const hud = document.getElementById('hud')!;
 const screen = document.getElementById('screen')!;
 const toastEl = document.getElementById('toast')!;
+const bannerEl = document.getElementById('banner')!;
 const fx = new Fx();
 document.getElementById('app')!.insertBefore(fx.canvas, hud);
 
@@ -72,6 +73,8 @@ let cpuPlan: CpuPlan | null = null;
 let overShown = false;
 let overTimer = 0;
 let paused = false;
+// Numbers for the end-of-match screen.
+let stats = { shots: [0, 0], knocked: [0, 0], best: 0 };
 
 interface AimDrag {
   pointerId: number;
@@ -134,7 +137,8 @@ function startSolo(n: number) {
     guide: lv.guide,
   });
   beginMatch();
-  toast(`Fase ${n}: ${lv.name}`);
+  banner(`Fase ${n}`, lv.name, 'level');
+  later(() => turnBanner(match), 1500);
 }
 
 function startDuel() {
@@ -149,7 +153,8 @@ function startDuel() {
     guide: 0.6,
   });
   beginMatch();
-  toast(`Vez de ${match.names[0]}!`);
+  banner('Duelo!', `${match.names[0]} contra ${match.names[1]}`, 'level');
+  later(() => turnBanner(match), 1500);
 }
 
 function beginMatch() {
@@ -162,6 +167,8 @@ function beginMatch() {
   aim = null;
   drag = null;
   fx.clear();
+  stats = { shots: [0, 0], knocked: [0, 0], best: 0 };
+  clearLater();
   hideScreen();
   hud.hidden = false;
   updateHud();
@@ -169,6 +176,8 @@ function beginMatch() {
 
 function leaveMatch() {
   match = null;
+  clearLater();
+  bannerEl.className = '';
   hud.hidden = true;
   showHome();
 }
@@ -377,6 +386,7 @@ function handleEvents(m: Match) {
   for (const ev of m.events) {
     switch (ev.type) {
       case 'flick':
+        stats.shots[m.turn]++;
         sfx.flick(ev.power);
         fx.puff(ev.x, ev.y, 6);
         break;
@@ -385,11 +395,13 @@ function handleEvents(m: Match) {
         if (ev.strength > 0.25 && now - lastWord > 350) {
           fx.word(ev.x, ev.y);
           fx.shake = Math.min(1, 0.3 + ev.strength);
+          buzz(12);
           lastWord = now;
         }
         break;
       case 'topple':
         sfx.topple();
+        buzz(25);
         fx.burst(ev.x, ev.y, ev.color, 12);
         break;
       case 'bump':
@@ -405,6 +417,8 @@ function handleEvents(m: Match) {
         toast(m.lastResult, 'good');
         // In solo only your pieces learn; in a duel both players share this device's collection.
         if (ev.charId && (m.mode === 'duel' || ev.by === 0)) gainXp(ev.charId, ev.count);
+        stats.knocked[ev.by] += ev.count;
+        stats.best = Math.max(stats.best, ev.count);
         hudDirty = true;
         break;
       case 'miss':
@@ -414,6 +428,7 @@ function handleEvents(m: Match) {
         break;
       case 'turn':
         hudDirty = true;
+        later(() => turnBanner(m), 900);
         break;
       case 'win':
         hudDirty = true;
@@ -449,8 +464,8 @@ function updateHud() {
       ${chip(1)}
     </div>
     <div class="tools">
-      <button class="tool" id="btnView">${renderer.kind === '2d' ? '3D' : '2D'}</button>
-      <button class="tool" id="btnPause">II</button>
+      <button class="tool" id="btnView" aria-label="Trocar visão">${renderer.kind === '2d' ? ICON.cube : ICON.flat}<small>${renderer.kind === '2d' ? '3D' : '2D'}</small></button>
+      <button class="tool" id="btnPause" aria-label="Pausa">${ICON.pause}</button>
     </div>
     <div class="hint">${hintText(m)}</div>`;
   hud.querySelector('#btnView')!.addEventListener('click', () => {
@@ -477,9 +492,49 @@ function toast(text: string, kind: 'good' | 'bad' | '' = '') {
   toastTimer = window.setTimeout(() => (toastEl.className = ''), 1800);
 }
 
+/** Big ribbon that slides across the screen. */
+function banner(title: string, sub = '', kind = '') {
+  bannerEl.innerHTML = `<div class="ribbon"><b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</div>`;
+  bannerEl.className = '';
+  void bannerEl.offsetWidth; // restart the animation
+  bannerEl.className = `show ${kind}`;
+}
+
+function turnBanner(m: Match | null) {
+  if (!m || m !== match || m.phase === 'over') return;
+  if (m.mode === 'solo') {
+    if (m.turn === 0) banner('Sua vez!', 'Puxe o boneco e solte', 'team0');
+    else banner('Vez do computador', '', 'team1');
+  } else {
+    banner(`Vez de ${m.names[m.turn]}`, '', `team${m.turn}`);
+  }
+}
+
+const timers: number[] = [];
+function later(fn: () => void, ms: number) {
+  timers.push(window.setTimeout(fn, ms));
+}
+function clearLater() {
+  while (timers.length) clearTimeout(timers.pop());
+}
+
+function buzz(ms: number | number[]) {
+  try {
+    navigator.vibrate?.(ms);
+  } catch {
+    /* not supported */
+  }
+}
+
+function starsHtml(n: number, max = 3) {
+  return Array.from({ length: max }, (_, i) => `<i class="${i < n ? 'on' : ''}">★</i>`).join('');
+}
+
 // ---------- Screens ----------
 
 function showScreen(html: string, cls = '') {
+  bannerEl.className = ''; // a menu always covers the ribbon
+  clearLater();
   screen.innerHTML = `<div class="panel ${cls}">${html}</div>`;
   screen.hidden = false;
 }
@@ -506,8 +561,8 @@ function showHome() {
      <button class="big alt" id="goDuel">${ICON.duel}Duelo</button>
      <button class="big gold" id="goChars">${ICON.star}Personagens</button>
      <div class="row">
-       <button class="small" id="goPhone">Jogar no celular</button>
-       <button class="small" id="goSettings">Ajustes</button>
+       <button class="small" id="goPhone">${ICON.phone}Celular</button>
+       <button class="small" id="goSettings">${ICON.gear}Ajustes</button>
      </div>`,
     'home',
   );
@@ -522,6 +577,13 @@ const ICON = {
   play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10-6.5a1 1 0 0 0 0-1.7l-10-6.5A1 1 0 0 0 8 5.5z"/></svg>',
   duel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M4 4l10 10M14 18l4-4M16 20l4-4M4 20l6-6M20 4L10 14M6 14l4 4"/></svg>',
   star: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.8l2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3L2.9 9.5l6.3-.9z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.5"/><rect x="14" y="5" width="4" height="14" rx="1.5"/></svg>',
+  cube: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></svg>',
+  flat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 12h16"/></svg>',
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18h2"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>',
+  replay: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M4 12a8 8 0 1 0 2.5-5.8"/><path d="M4 4v4h4"/></svg>',
+  next: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5.5v13a1 1 0 0 0 1.5.9L15 13.9V18a1 1 0 0 0 2 0V6a1 1 0 0 0-2 0v4.1L6.5 4.6A1 1 0 0 0 5 5.5z"/></svg>',
 };
 
 function heroes() {
@@ -564,7 +626,7 @@ function showLevels() {
        const done = lv.n <= data.beaten;
        return `<button class="level ${done ? 'done' : ''}" data-level="${lv.n}" ${open ? '' : 'disabled'}>
          <img src="${portrait(getPack(lv.cpuPack).chars[(lv.n - 1) % 5])}" alt="" />
-         <b>${lv.n}</b><span>${open ? lv.name : 'Bloqueada'}</span>${done ? '<i>★</i>' : ''}
+         <b>${lv.n}</b><span>${open ? lv.name : 'Bloqueada'}</span>${done ? `<div class="lstars">${starsHtml(data.stars[lv.n] ?? 1)}</div>` : ''}
        </button>`;
      }).join('')}</div>
      <button class="back" id="back">Voltar</button>`,
@@ -761,6 +823,10 @@ function showSettings() {
        <button class="opt ${data.sound ? 'sel' : ''}" id="sOn">Ligado</button>
        <button class="opt ${data.sound ? '' : 'sel'}" id="sOff">Desligado</button>
      </div></div>
+     <div class="rule"><p>Música:</p><div class="row">
+       <button class="opt ${data.music ? 'sel' : ''}" id="mOn">Ligada</button>
+       <button class="opt ${data.music ? '' : 'sel'}" id="mOff">Desligada</button>
+     </div></div>
      <button class="small danger" id="reset">Apagar progresso</button>
      <button class="back" id="back">Voltar</button>`,
   );
@@ -770,14 +836,26 @@ function showSettings() {
   const sound = (v: boolean) => {
     data.sound = v;
     setSound(v);
+    setMusic(v && data.music);
     save(data);
     showSettings();
   };
   on('sOn', () => sound(true));
   on('sOff', () => sound(false));
+  const music = (v: boolean) => {
+    data.music = v;
+    setMusic(v);
+    save(data);
+    showSettings();
+  };
+  on('mOn', () => music(true));
+  on('mOff', () => music(false));
   on('reset', () => {
-    if (confirm('Apagar todas as fases vencidas e personagens desbloqueados?')) {
+    if (confirm('Apagar fases vencidas, estrelas, níveis dos bonecos e personagens desbloqueados?')) {
       data.beaten = 0;
+      data.stars = {};
+      data.xp = {};
+      data.teams = {};
       data.soloPack = 'turma';
       data.duelPacks = ['turma', 'turma'];
       save(data);
@@ -812,11 +890,18 @@ function showResult(m: Match) {
   if (m.mode === 'solo') {
     const won = w === 0;
     let unlockedHtml = '';
+    // Stars: win with few flicks.
+    const shots = stats.shots[0];
+    const starCount = shots <= 5 ? 3 : shots <= 9 ? 2 : 1;
+    let newBest = false;
     if (won) {
       sfx.win();
       fx.celebrate();
+      buzz([40, 60, 40]);
       const before = data.beaten;
       data.beaten = Math.max(data.beaten, level);
+      newBest = starCount > (data.stars[level] ?? 0);
+      data.stars[level] = Math.max(data.stars[level] ?? 0, starCount);
       save(data);
       const fresh = PACKS.filter((p) => p.unlockLevel > before && p.unlockLevel <= data.beaten);
       if (fresh.length) {
@@ -833,10 +918,12 @@ function showResult(m: Match) {
     const last = level >= LEVELS.length;
     showScreen(
       `<h2>${won ? (last ? 'Você é o Rei do Peteleco!' : `Fase ${level} completa!`) : 'Não foi dessa vez!'}</h2>
-       <p class="sub">${won ? 'Você derrubou todos os bonecos do computador.' : 'O computador derrubou todos os seus bonecos.'}</p>
+       ${won ? `<div class="bigstars">${starsHtml(starCount)}</div>` : ''}
+       <p class="sub">${won ? (newBest && starCount < 3 ? 'Recorde! Tente vencer com menos petelecos.' : starCount === 3 ? 'Perfeito!' : 'Vença com menos petelecos para ganhar mais estrelas.') : 'O computador derrubou todos os seus bonecos.'}</p>
+       ${matchStats()}
        ${unlockedHtml}
-       ${won && !last ? '<button class="big" id="next">Próxima fase</button>' : ''}
-       <button class="${won ? 'small' : 'big'}" id="again">${won ? 'Jogar de novo' : 'Tentar de novo'}</button>
+       ${won && !last ? `<button class="big" id="next">${ICON.next}Próxima fase</button>` : ''}
+       <button class="${won ? 'small' : 'big'}" id="again">${ICON.replay}${won ? 'Jogar de novo' : 'Tentar de novo'}</button>
        <button class="back" id="menu">Menu</button>`,
       won ? 'win' : '',
     );
@@ -848,7 +935,8 @@ function showResult(m: Match) {
     showScreen(
       `<h2>${esc(m.names[w])} venceu!</h2>
        <p class="sub">${esc(m.names[w])} é o Rei do Peteleco desta rodada.</p>
-       <button class="big" id="again">Revanche</button>
+       ${matchStats()}
+       <button class="big" id="again">${ICON.replay}Revanche</button>
        <button class="back" id="menu">Menu</button>`,
       'win',
     );
@@ -857,12 +945,72 @@ function showResult(m: Match) {
   on('menu', leaveMatch);
 }
 
+function matchStats() {
+  const m = match;
+  if (!m) return '';
+  const cell = (label: string, a: number, b: number) =>
+    `<div class="mstat"><b class="t0">${a}</b><span>${label}</span><b class="t1">${b}</b></div>`;
+  return `<div class="mstats">
+    <div class="mstat head"><b class="t0">${esc(m.names[0])}</b><span></span><b class="t1">${esc(m.names[1])}</b></div>
+    ${cell('Petelecos', stats.shots[0], stats.shots[1])}
+    ${cell('Derrubados', stats.knocked[0], stats.knocked[1])}
+  </div>`;
+}
+
 function esc(s: string) {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
 // ---------- Start ----------
 
-if (data.view === '3d') void setView('3d');
-showHome();
+const splash = document.getElementById('splash')!;
+const splashBar = document.getElementById('splashBar')!;
+
+/** Draw every character once up front so nothing stutters during play. */
+async function boot() {
+  const all = PACKS.flatMap((p) => p.chars);
+  // A timer (not requestAnimationFrame) so loading also finishes in a background tab.
+  const nextFrame = () => new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < all.length; i++) {
+    getSprite(all[i], 'front');
+    getSprite(all[i], 'back');
+    portrait(all[i]);
+    splashBar.style.width = `${Math.round(((i + 1) / all.length) * 100)}%`;
+    if (i % 2 === 1) await nextFrame();
+  }
+  try {
+    await Promise.race([document.fonts?.ready, new Promise((r) => setTimeout(r, 1500))]);
+  } catch {
+    /* fonts are optional */
+  }
+  if (data.view === '3d') await setView('3d');
+  showHome();
+  splash.classList.add('done');
+  setTimeout(() => splash.remove(), 600);
+}
+
+// Music can only start after the first touch or click.
+window.addEventListener(
+  'pointerdown',
+  () => {
+    sfx.unlock();
+    if (data.music && data.sound) setMusic(true);
+  },
+  { once: true },
+);
+
 requestAnimationFrame(frame);
+void boot();
+
+// Dev-only shortcut for testing end screens: __peteleco.finish(0) in the console.
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__peteleco = {
+    finish(winner: Owner, shots = 4) {
+      if (!match) return;
+      match.winner = winner;
+      match.phase = 'over';
+      stats.shots[0] = shots;
+      showResult(match);
+    },
+  };
+}
