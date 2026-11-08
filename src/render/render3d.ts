@@ -3,12 +3,11 @@
 // Mapping: world (x, y) on the table -> three.js (x - W/2, 0, L/2 - y). Up is +Y.
 
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { buildFigure } from '../figures/build';
 import type { CharDef } from '../game/packs';
 import { forward, type Match, type Owner } from '../game/sim';
-import { matCanvas } from './mat';
+import { getScene } from '../scenes/scenes';
+import { buildStage, disposeStage, environmentFor, type Stage } from '../scenes/stage';
 import type { AimView, Renderer } from './types';
 
 interface PieceObj {
@@ -21,9 +20,6 @@ interface PieceObj {
   owner: Owner;
 }
 
-const std = (color: string, extra: Partial<THREE.MeshStandardMaterialParameters> = {}) =>
-  new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.05, ...extra });
-
 const TEAM = ['#2f6fe0', '#e0405a'];
 
 export class Renderer3D implements Renderer {
@@ -31,8 +27,9 @@ export class Renderer3D implements Renderer {
   readonly canvas: HTMLCanvasElement;
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(50, 1, 0.5, 2000);
-  private tableGroup = new THREE.Group();
+  private camera = new THREE.PerspectiveCamera(50, 1, 0.5, 8000);
+  private stage: Stage | null = null;
+  private stageKey = '';
   private pieces = new Map<number, PieceObj>();
   private aimGroup = new THREE.Group();
   private selRing: THREE.Mesh;
@@ -54,42 +51,10 @@ export class Renderer3D implements Renderer {
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.canvas = this.renderer.domElement;
 
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.55;
-    this.scene.background = skyTexture();
-    this.scene.fog = new THREE.Fog('#b98cff', 260, 700);
-    const sun = new THREE.DirectionalLight('#fff4e0', 2.4);
-    sun.position.set(40, 120, 30);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.radius = 4;
-    sun.shadow.bias = -0.0005;
-    const sc = sun.shadow.camera;
-    sc.left = -80;
-    sc.right = 80;
-    sc.top = 140;
-    sc.bottom = -140;
-    sc.far = 400;
-    this.scene.add(sun);
+    this.scene.environment = environmentFor(this.renderer);
+    this.scene.environmentIntensity = 0.5;
 
-    // Playroom floor with a round rug
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), std('#f2c48d', { roughness: 0.8 }));
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -40;
-    floor.receiveShadow = true;
-    this.scene.add(floor);
-    const rug = new THREE.Mesh(new THREE.CircleGeometry(170, 64), std('#7fd1c7', { roughness: 0.95 }));
-    rug.rotation.x = -Math.PI / 2;
-    rug.position.y = -39.9;
-    rug.receiveShadow = true;
-    this.scene.add(rug);
-    const rugRing = new THREE.Mesh(new THREE.RingGeometry(150, 160, 64), std('#ffffff', { roughness: 0.95 }));
-    rugRing.rotation.x = -Math.PI / 2;
-    rugRing.position.y = -39.85;
-    this.scene.add(rugRing);
-
-    this.scene.add(this.tableGroup, this.aimGroup);
+    this.scene.add(this.aimGroup);
     this.selRing = new THREE.Mesh(
       new THREE.TorusGeometry(1, 0.12, 8, 32),
       new THREE.MeshBasicMaterial({ color: '#fde047' }),
@@ -133,37 +98,11 @@ export class Renderer3D implements Renderer {
     return { x: hit.x + this.W / 2, y: this.L / 2 - hit.z };
   }
 
-  private buildTable(m: Match) {
-    this.tableGroup.clear();
+  private buildScene(m: Match) {
+    disposeStage(this.scene, this.stage);
     this.W = m.W;
     this.L = m.L;
-    const tex = new THREE.CanvasTexture(matCanvas(m.L));
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 8;
-    const mat = new THREE.Mesh(new THREE.PlaneGeometry(m.W, m.L), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 }));
-    mat.rotation.x = -Math.PI / 2;
-    mat.receiveShadow = true;
-    this.tableGroup.add(mat);
-    const wood = std('#d98a45', { roughness: 0.45 });
-    const top = new THREE.Mesh(new RoundedBoxGeometry(m.W + 7, 3, m.L + 7, 4, 1.4), wood);
-    top.position.y = -1.52;
-    top.receiveShadow = true;
-    top.castShadow = true;
-    this.tableGroup.add(top);
-    for (const [lx, lz] of [
-      [-1, -1],
-      [1, -1],
-      [-1, 1],
-      [1, 1],
-    ]) {
-      const leg = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.4, 37, 16), wood);
-      leg.position.set((lx * m.W) / 2.3, -21.5, (lz * m.L) / 2.15);
-      leg.castShadow = true;
-      this.tableGroup.add(leg);
-      const ball = new THREE.Mesh(new THREE.SphereGeometry(2.4, 16, 12), std(lz > 0 ? TEAM[0] : TEAM[1], { roughness: 0.3 }));
-      ball.position.set((lx * m.W) / 2.3, -38.5, (lz * m.L) / 2.15);
-      this.tableGroup.add(ball);
-    }
+    this.stage = buildStage(this.scene, getScene(m.scene), m.W, m.L);
   }
 
   private makePiece(ch: CharDef, owner: Owner): PieceObj {
@@ -201,7 +140,11 @@ export class Renderer3D implements Renderer {
       this.camera.aspect = cw / Math.max(1, ch);
       this.camera.updateProjectionMatrix();
     }
-    if (m.W !== this.W || m.L !== this.L) this.buildTable(m);
+    const key = `${m.scene}:${m.W}:${m.L}`;
+    if (key !== this.stageKey) {
+      this.stageKey = key;
+      this.buildScene(m);
+    }
     if (m !== this.lastMatch) {
       this.lastMatch = m;
       this.camReady = false; // fly in for the new match
@@ -221,8 +164,9 @@ export class Renderer3D implements Renderer {
         (obj.ring.material as THREE.MeshBasicMaterial).color.set(TEAM[p.owner]);
         obj.owner = p.owner;
       }
-      const drop = p.out ? -p.outT * p.outT * 45 : 0;
-      obj.root.position.copy(this.toThree(p.x, p.y, drop + p.h));
+      // Off the play area: shrink away.
+      obj.root.scale.setScalar(p.out ? Math.max(0.01, 1 - p.outT) : 1);
+      obj.root.position.copy(this.toThree(p.x, p.y, p.h));
       // Tumble: flip around the middle, along the direction it's sliding.
       const rdir = new THREE.Vector3(Math.cos(p.rollDir), 0, -Math.sin(p.rollDir));
       const raxis = new THREE.Vector3(0, 1, 0).cross(rdir).normalize();
@@ -331,20 +275,4 @@ export class Renderer3D implements Renderer {
 
 function easeOut(t: number) {
   return 1 - (1 - t) * (1 - t);
-}
-
-function skyTexture(): THREE.CanvasTexture {
-  const cv = document.createElement('canvas');
-  cv.width = 4;
-  cv.height = 256;
-  const ctx = cv.getContext('2d')!;
-  const g = ctx.createLinearGradient(0, 0, 0, 256);
-  g.addColorStop(0, '#7b5cff');
-  g.addColorStop(0.6, '#b98cff');
-  g.addColorStop(1, '#ffb3d9');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 4, 256);
-  const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
 }

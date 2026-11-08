@@ -14,6 +14,7 @@ export interface Save {
   teams: Record<string, string[]>; // chosen character ids per pack
   stars: Record<string, number>; // best stars (1-3) per level
   music: boolean;
+  duelScene: string;
 }
 
 const KEY = 'rei-do-peteleco:v1';
@@ -30,6 +31,7 @@ const DEFAULTS: Save = {
   teams: {},
   stars: {},
   music: true,
+  duelScene: 'cozinha',
 };
 
 export function load(): Save {

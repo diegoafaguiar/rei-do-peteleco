@@ -2,7 +2,9 @@
 
 import { getSprite } from '../figures/sprites';
 import type { Match, Owner, Piece } from '../game/sim';
-import { matCanvas, roundRect } from './mat';
+import { backdrop } from '../scenes/backdrop';
+import { getScene } from '../scenes/scenes';
+import { roundRect } from './mat';
 import { HUD_TOP, type AimView, type Renderer } from './types';
 
 const SPRITE_HEIGHT = 0.8; // how much a unit of height lifts on screen
@@ -18,7 +20,6 @@ export class Renderer2D implements Renderer {
   private L = 100;
   private view: Owner = 0;
   private time = 0;
-  private bg: HTMLCanvasElement | null = null;
   private lastMatch: Match | null = null;
   private introT = 1; // 0..1 table pops in at the start of a match
   private flipT = 1; // 0..1 table spins when the turn passes in a duel
@@ -39,12 +40,12 @@ export class Renderer2D implements Renderer {
     if (this.canvas.width !== Math.round(cw * dpr) || this.canvas.height !== Math.round(ch * dpr)) {
       this.canvas.width = Math.round(cw * dpr);
       this.canvas.height = Math.round(ch * dpr);
-      this.bg = null;
     }
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.W = m.W;
     this.L = m.L;
-    const pad = 22;
+    // Leave room around the table so the scenery shows.
+    const pad = Math.max(26, cw * 0.11);
     const top = HUD_TOP + 22;
     const bottom = 64;
     this.scale = Math.min((cw - pad * 2) / m.W, (ch - top - bottom) / m.L);
@@ -68,33 +69,6 @@ export class Renderer2D implements Renderer {
     return this.scale;
   }
 
-  private background(cw: number, ch: number) {
-    if (this.bg) return this.bg;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const cv = document.createElement('canvas');
-    cv.width = Math.round(cw * dpr);
-    cv.height = Math.round(ch * dpr);
-    const ctx = cv.getContext('2d')!;
-    ctx.scale(dpr, dpr);
-    const g = ctx.createLinearGradient(0, 0, 0, ch);
-    g.addColorStop(0, '#7b5cff');
-    g.addColorStop(0.55, '#a77bff');
-    g.addColorStop(1, '#ff9ecd');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, cw, ch);
-    // Floating bubbles
-    let seed = 7;
-    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-    for (let i = 0; i < 26; i++) {
-      ctx.fillStyle = `rgba(255,255,255,${0.05 + rnd() * 0.1})`;
-      ctx.beginPath();
-      ctx.arc(rnd() * cw, rnd() * ch, 10 + rnd() * 60, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    this.bg = cv;
-    return cv;
-  }
-
   render(m: Match, aim: AimView | null, viewOwner: Owner, dt: number) {
     this.time += dt;
     if (m !== this.lastMatch) {
@@ -114,7 +88,21 @@ export class Renderer2D implements Renderer {
     const chh = this.canvas.clientHeight;
     const s = this.scale;
 
-    ctx.drawImage(this.background(cw, chh), 0, 0, cw, chh);
+    const scene = getScene(m.scene);
+    ctx.fillStyle = scene.fog;
+    ctx.fillRect(0, 0, cw, chh);
+    const shot = backdrop({
+      sceneId: m.scene,
+      W: m.W,
+      L: m.L,
+      view: viewOwner,
+      cw,
+      ch: chh,
+      dpr: Math.min(2, window.devicePixelRatio || 1),
+      scale: s,
+      ox: Math.round(this.ox * 100) / 100,
+      oy: Math.round(this.oy * 100) / 100,
+    });
 
     // Intro pop and duel spin, around the middle of the table.
     ctx.save();
@@ -125,46 +113,9 @@ export class Renderer2D implements Renderer {
     ctx.globalAlpha = Math.min(1, this.introT * 2);
     ctx.translate(cx, cy);
     ctx.rotate(spin);
-    ctx.scale(0.8 + 0.2 * pop, 0.8 + 0.2 * pop);
+    ctx.scale(0.9 + 0.1 * pop, 0.9 + 0.1 * pop);
     ctx.translate(-cx, -cy);
-
-    // Wooden frame + mat
-    const tw = m.W * s;
-    const th = m.L * s;
-    const frame = Math.max(8, s * 2.2);
-    ctx.save();
-    ctx.shadowColor = 'rgba(40,10,80,0.45)';
-    ctx.shadowBlur = 30;
-    ctx.shadowOffsetY = 14;
-    const wood = ctx.createLinearGradient(this.ox, 0, this.ox + tw, 0);
-    wood.addColorStop(0, '#b86b2e');
-    wood.addColorStop(0.5, '#e09a52');
-    wood.addColorStop(1, '#b86b2e');
-    ctx.fillStyle = wood;
-    roundRect(ctx, this.ox - frame, this.oy - frame, tw + frame * 2, th + frame * 2, frame * 1.6);
-    ctx.fill();
-    ctx.restore();
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-    ctx.lineWidth = 2;
-    roundRect(ctx, this.ox - frame + 3, this.oy - frame + 3, tw + frame * 2 - 6, th + frame * 2 - 6, frame * 1.4);
-    ctx.stroke();
-
-    ctx.save();
-    roundRect(ctx, this.ox, this.oy, tw, th, frame * 0.8);
-    ctx.clip();
-    if (viewOwner === 0) {
-      ctx.drawImage(matCanvas(m.L), this.ox, this.oy, tw, th);
-    } else {
-      ctx.translate(this.ox + tw, this.oy + th);
-      ctx.rotate(Math.PI);
-      ctx.drawImage(matCanvas(m.L), 0, 0, tw, th);
-    }
-    ctx.restore();
-    // Inner shadow along the frame
-    ctx.strokeStyle = 'rgba(80,30,0,0.25)';
-    ctx.lineWidth = 3;
-    roundRect(ctx, this.ox + 1.5, this.oy + 1.5, tw - 3, th - 3, frame * 0.8);
-    ctx.stroke();
+    ctx.drawImage(shot, 0, 0, cw, chh);
 
     if (aim) this.drawAim(m, aim);
 

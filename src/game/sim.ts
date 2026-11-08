@@ -51,6 +51,8 @@ export interface MatchOptions {
   cpu: [boolean, boolean];
   missRule: MissRule;
   guide: number;
+  scene: string; // where the match happens (see scenes)
+  grip: number; // how much the surface slows pieces: ice < 1 < sand
 }
 
 export interface Match extends MatchOptions {
@@ -101,7 +103,7 @@ export function createMatch(opts: MatchOptions): Match {
     winner: null,
     events: [],
     // Room for heavy pieces (which fly slower) to still reach the far side.
-    vmax: Math.sqrt(2 * FRICTION * opts.length * 1.7),
+    vmax: Math.sqrt(2 * FRICTION * opts.grip * opts.length * 1.7),
     timer: 0,
     lastResult: '',
   };
@@ -214,9 +216,9 @@ export function flickSpeed(m: Match, ch: CharDef, power: number) {
   return m.vmax * clamp(power, 0, 1) * Math.pow(ch.mass, -0.35);
 }
 
-/** Slowdown on the table for this character (some slide, some grip). */
-export function frictionOf(ch: CharDef) {
-  return FRICTION * ch.grip;
+/** Slowdown for this character on this surface (some slide, some grip; ice is slippery). */
+export function frictionOf(ch: CharDef, m: Match) {
+  return FRICTION * ch.grip * m.grip;
 }
 
 export function step(m: Match, dt: number) {
@@ -263,7 +265,7 @@ function stepPhysics(m: Match, dt: number) {
   for (const p of active) {
     const speed = Math.hypot(p.vx, p.vy);
     if (speed > 0) {
-      const dec = (p.fallen ? FALLEN_FRICTION : frictionOf(p.char)) * dt;
+      const dec = (p.fallen ? FALLEN_FRICTION * m.grip : frictionOf(p.char, m)) * dt;
       const ns = Math.max(0, speed - dec);
       p.vx *= ns / speed;
       p.vy *= ns / speed;

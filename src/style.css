@@ -1077,3 +1077,14 @@ button:disabled {
     animation-iteration-count: 1 !important;
   }
 }
+
+.places {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.places .opt {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+}

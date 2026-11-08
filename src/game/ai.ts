@@ -33,7 +33,7 @@ export function planCpuShot(m: Match, angleErrorDeg: number): CpuPlan | null {
   // Arrive fast enough to knock it down, with a margin.
   const arrive = (target.char.stability / Math.sqrt(flicker.char.mass / target.char.mass)) * 1.7 + 8;
   // A bit extra for the speed lost each time it lands while tumbling.
-  const v0 = Math.sqrt(arrive * arrive + 2 * frictionOf(flicker.char) * dist) * 1.08;
+  const v0 = Math.sqrt(arrive * arrive + 2 * frictionOf(flicker.char, m) * dist) * 1.08;
   const full = flickSpeed(m, flicker.char, 1);
   const power = Math.min(1, (v0 / full) * (1 + gaussian() * 0.06));
 

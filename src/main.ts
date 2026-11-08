@@ -4,6 +4,7 @@ import { sfx, setMusic, setSound } from './audio';
 import { planCpuShot, runCpuShot, type CpuPlan } from './game/ai';
 import { boosted, levelOf, levelProgress, statsOf, MAX_LEVEL } from './game/evolve';
 import { LEVELS, DUEL_LENGTH } from './game/levels';
+import { getScene } from './scenes/scenes';
 import { PACKS, getPack, isUnlocked, teamOf, type CharDef, type Pack } from './game/packs';
 import {
   createMatch,
@@ -135,6 +136,8 @@ function startSolo(n: number) {
     cpu: [false, true],
     missRule: data.missRule,
     guide: lv.guide,
+    scene: lv.scene,
+    grip: getScene(lv.scene).grip,
   });
   beginMatch();
   banner(`Fase ${n}`, lv.name, 'level');
@@ -151,6 +154,8 @@ function startDuel() {
     cpu: [false, false],
     missRule: data.missRule,
     guide: 0.6,
+    scene: data.duelScene,
+    grip: getScene(data.duelScene).grip,
   });
   beginMatch();
   banner('Duelo!', `${match.names[0]} contra ${match.names[1]}`, 'level');
@@ -329,6 +334,8 @@ function renderIdle(dt: number) {
       cpu: [true, true],
       missRule: 'volta',
       guide: 0,
+      scene: 'cozinha',
+      grip: 1,
     });
   }
   idleTimer += dt;
@@ -659,6 +666,9 @@ function showDuelSetup() {
      ${side(0)}
      <div class="vs">contra</div>
      ${side(1)}
+     <div class="rule"><p>Onde vai ser o duelo?</p><div class="places">${LEVELS.filter((lv) => lv.n <= data.beaten + 1)
+       .map((lv) => `<button class="opt ${data.duelScene === lv.scene ? 'sel' : ''}" data-scene="${lv.scene}">${lv.name}</button>`)
+       .join('')}</div></div>
      ${missRulePicker()}
      <button class="big" id="start">${ICON.play}Começar!</button>
      <button class="back" id="back">Voltar</button>`,
@@ -687,6 +697,15 @@ function showDuelSetup() {
     keepNames();
     showDuelSetup();
   });
+  screen.querySelectorAll<HTMLButtonElement>('[data-scene]').forEach((b) =>
+    b.addEventListener('click', () => {
+      sfx.click();
+      keepNames();
+      data.duelScene = b.dataset.scene!;
+      save(data);
+      showDuelSetup();
+    }),
+  );
   on('start', () => {
     keepNames();
     startDuel();
@@ -1005,6 +1024,8 @@ void boot();
 // Dev-only shortcut for testing end screens: __peteleco.finish(0) in the console.
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__peteleco = {
+    start: (n: number) => startSolo(n),
+    view: (k: '2d' | '3d') => setView(k),
     finish(winner: Owner, shots = 4) {
       if (!match) return;
       match.winner = winner;

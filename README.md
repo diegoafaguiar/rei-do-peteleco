@@ -11,6 +11,11 @@ Jogo de peteleco de mesa para jogar no navegador (computador ou celular).
 - Errou? Depende da regra escolhida: o boneco volta pra fila ou é perdido.
 - Ganha quem deixar o outro sem nenhum boneco.
 
+Cada fase acontece num lugar diferente, no 2D e no 3D: Mesa da Cozinha, Mesa da Sala, Chão da Rua,
+Pátio da Escola, Mesa do Shopping, Praça de Alimentação, Pista de Gelo, Tabuleiro Gigante, Estádio,
+Areia da Praia, Vulcão e Trono do Rei. O chão muda o jogo: no gelo os bonecos escorregam mais,
+na areia e no asfalto param antes. No Duelo dá para escolher o lugar.
+
 Modos: **Fases** (contra o computador, a mesa fica mais comprida e o computador mira melhor a cada fase)
 e **Duelo** (duas pessoas no mesmo aparelho). O botão 2D/3D troca a visão a qualquer momento.
 
@@ -39,4 +44,5 @@ Abra http://localhost:5173. Para jogar no celular, entre em "Jogar no celular" e
 - Com `npm run dev` rodando, abra http://localhost:5173/figures.html para ver todos os bonecos de frente e de costas.
 - `src/game/levels.ts`: fases (distância, time do computador, pontaria).
 - `src/game/sim.ts`: regras e física.
+- `src/scenes/`: cenários de cada fase (objetos, chão, luz e céu).
 - `src/render/`: desenho 2D e 3D.
