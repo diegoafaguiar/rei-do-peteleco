@@ -11,7 +11,6 @@ import {
   flick,
   forward,
   getPiece,
-  launchY,
   selectPiece,
   setLaunchX,
   step,
@@ -171,6 +170,7 @@ function beginMatch() {
   cpuPlan = null;
   aim = null;
   drag = null;
+  keyAim = null;
   fx.clear();
   stats = { shots: [0, 0], knocked: [0, 0], best: 0 };
   clearLater();
@@ -188,6 +188,12 @@ function leaveMatch() {
 }
 
 // ---------- Input ----------
+//
+// Aiming works like a slingshot you can grab anywhere: press (on the piece or on any empty spot),
+// pull back away from where you want to shoot, and let go. Pulling from anywhere means there is
+// always room to pull, even when the piece sits near the bottom edge of a desktop window.
+// Tap another piece of your team to switch. Move the piece sideways with the ◀ ▶ buttons,
+// A/D or the arrow keys. Keyboard aiming: ←/→ turn, ↑/↓ power, Space flicks. Esc cancels.
 
 function localPoint(e: PointerEvent) {
   const rect = renderer.canvas.getBoundingClientRect();
@@ -198,32 +204,28 @@ function humanTurn(m: Match) {
   return m.phase === 'aim' && !m.cpu[m.turn] && !paused;
 }
 
+const finePointer = window.matchMedia('(pointer: fine)').matches;
+
+/** Pull distance (screen pixels) for a full-power flick. */
+function fullPull() {
+  const c = renderer.canvas;
+  return Math.max(110, Math.min(200, Math.min(c.clientWidth, c.clientHeight) * 0.26));
+}
+
 stage.addEventListener('pointerdown', (e) => {
   sfx.unlock();
   const m = match;
   if (!m || !humanTurn(m) || drag) return;
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
   const pt = localPoint(e);
-  const sel = getPiece(m, m.selected);
 
-  // 1) Grab the piece on the flick spot to aim.
-  if (sel) {
-    const sp = renderer.worldToScreen(sel.tx, sel.ty);
-    const edge = renderer.worldToScreen(sel.tx + sel.char.radius, sel.ty);
-    const rPx = Math.hypot(edge.x - sp.x, edge.y - sp.y);
-    if (Math.hypot(pt.x - sp.x, pt.y - sp.y) < Math.max(48, rPx * 2)) {
-      drag = { pointerId: e.pointerId, kind: 'aim', sx: pt.x, sy: pt.y };
-      stage.setPointerCapture(e.pointerId);
-      return;
-    }
-  }
-
-  // 2) Tap another piece of your team to use it instead.
+  // Tap another piece of your team to use it instead.
   let best: { id: number; d: number } | null = null;
   for (const p of teamPieces(m, m.turn)) {
     if (p.id === m.selected) continue;
     const sp = renderer.worldToScreen(p.x, p.y);
     const d = Math.hypot(pt.x - sp.x, pt.y - sp.y);
-    if (d < 36 && (!best || d < best.d)) best = { id: p.id, d };
+    if (d < Math.max(30, renderer.pxPerUnit(p.x, p.y) * p.char.radius * 1.6) && (!best || d < best.d)) best = { id: p.id, d };
   }
   if (best) {
     selectPiece(m, best.id);
@@ -231,64 +233,131 @@ stage.addEventListener('pointerdown', (e) => {
     return;
   }
 
-  // 3) Touch near your flick line to slide the piece sideways.
-  const w = renderer.screenToWorld(pt.x, pt.y);
-  if (w && Math.abs(w.y - launchY(m, m.turn)) < 14) {
-    drag = { pointerId: e.pointerId, kind: 'slide', sx: pt.x, sy: pt.y };
-    stage.setPointerCapture(e.pointerId);
-    setLaunchX(m, w.x);
-  }
+  // Anywhere else: start pulling the slingshot.
+  keyAim = null;
+  drag = { pointerId: e.pointerId, kind: 'aim', sx: pt.x, sy: pt.y };
+  stage.setPointerCapture(e.pointerId);
+  stage.classList.add('aiming');
 });
 
 stage.addEventListener('pointermove', (e) => {
   const m = match;
-  if (!m || !drag || e.pointerId !== drag.pointerId) return;
   const pt = localPoint(e);
-  if (drag.kind === 'slide') {
-    const w = renderer.screenToWorld(pt.x, pt.y);
-    if (w) setLaunchX(m, w.x);
+  if (!m || !drag || e.pointerId !== drag.pointerId) {
+    updateCursor(m, pt.x, pt.y);
     return;
   }
-  aim = computeAim(m, pt.x, pt.y);
+  aim = computeAim(m, drag.sx - pt.x, drag.sy - pt.y);
 });
 
 function endDrag(e: PointerEvent) {
   const m = match;
   if (!drag || e.pointerId !== drag.pointerId) return;
-  const wasAim = drag.kind === 'aim';
   drag = null;
-  if (m && wasAim && aim && aim.power > 0.05 && humanTurn(m)) {
+  stage.classList.remove('aiming');
+  if (m && aim && aim.power > 0.04 && humanTurn(m)) {
     flick(m, aim.dx, aim.dy, aim.power);
   }
   aim = null;
 }
 stage.addEventListener('pointerup', endDrag);
-stage.addEventListener('pointercancel', (e) => {
-  if (drag && e.pointerId === drag.pointerId) {
-    drag = null;
-    aim = null;
-  }
+stage.addEventListener('pointercancel', cancelAim);
+stage.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  cancelAim();
 });
 
-function computeAim(m: Match, px: number, py: number): AimView | null {
+function cancelAim() {
+  drag = null;
+  aim = null;
+  keyAim = null;
+  stage.classList.remove('aiming');
+}
+
+/** Shows which things you can grab. */
+function updateCursor(m: Match | null, x: number, y: number) {
+  if (!finePointer) return;
+  let cur = '';
+  if (m && humanTurn(m)) {
+    cur = 'grab';
+    for (const p of teamPieces(m, m.turn)) {
+      if (p.id === m.selected) continue;
+      const sp = renderer.worldToScreen(p.x, p.y);
+      if (Math.hypot(x - sp.x, y - sp.y) < Math.max(30, renderer.pxPerUnit(p.x, p.y) * p.char.radius * 1.6)) cur = 'pointer';
+    }
+  }
+  stage.style.cursor = cur;
+}
+
+/**
+ * Turns a pull on screen (pixels, pointing where the piece should go) into a flick.
+ * The direction is measured on screen next to the piece, so it also feels right in 3D.
+ */
+function computeAim(m: Match, pullX: number, pullY: number): AimView | null {
   const sel = getPiece(m, m.selected);
   if (!sel) return null;
+  const pullPx = Math.hypot(pullX, pullY);
+  if (pullPx < 10) return null;
   const sp = renderer.worldToScreen(sel.tx, sel.ty);
-  const pullPx = Math.hypot(px - sp.x, py - sp.y);
-  if (pullPx < 12) return null;
-  const finger = renderer.screenToWorld(px, py);
-  if (!finger) return aim;
-  let dx = sel.tx - finger.x;
-  let dy = sel.ty - finger.y;
+  const reach = 40;
+  const ahead = renderer.screenToWorld(sp.x + (pullX / pullPx) * reach, sp.y + (pullY / pullPx) * reach);
+  if (!ahead) return aim;
+  let dx = ahead.x - sel.tx;
+  let dy = ahead.y - sel.ty;
   const len = Math.hypot(dx, dy) || 1;
   dx /= len;
   dy /= len;
   // Must point toward the other side of the table.
   if (dy * forward(m.turn) < 0.12) return null;
-  const c = renderer.canvas;
-  const power = Math.min(1, pullPx / (0.32 * Math.min(c.clientWidth, c.clientHeight)));
-  return { x: sel.tx, y: sel.ty, dx, dy, power, pullX: finger.x, pullY: finger.y };
+  const power = Math.min(1, pullPx / fullPull());
+  return { x: sel.tx, y: sel.ty, dx, dy, power, pullX: sel.tx - dx * power * 12, pullY: sel.ty - dy * power * 12 };
 }
+
+// ----- Keyboard -----
+
+let keyAim: { angle: number; power: number } | null = null; // angle 0 = straight ahead
+
+function keyAimView(m: Match): AimView | null {
+  const sel = getPiece(m, m.selected);
+  if (!sel || !keyAim) return null;
+  const f = forward(m.turn);
+  const dx = Math.sin(keyAim.angle) * f;
+  const dy = Math.cos(keyAim.angle) * f;
+  return { x: sel.tx, y: sel.ty, dx, dy, power: keyAim.power, pullX: sel.tx - dx * keyAim.power * 12, pullY: sel.ty - dy * keyAim.power * 12 };
+}
+
+function nudgePiece(m: Match, dir: number) {
+  const sel = getPiece(m, m.selected);
+  if (!sel || !humanTurn(m)) return;
+  // "Right" on screen depends on which side of the table you're on.
+  setLaunchX(m, sel.tx + dir * 2 * forward(m.turn));
+}
+
+window.addEventListener('keydown', (e) => {
+  const m = match;
+  if (e.key === 'Escape') {
+    if (drag || keyAim) return cancelAim();
+    if (m && !paused) return showPause();
+  }
+  if (!m || !humanTurn(m) || drag) return;
+  if ((e.target as HTMLElement).tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  const turn = Math.PI / 90; // 2 degrees
+  if (k === 'a') nudgePiece(m, -1);
+  else if (k === 'd') nudgePiece(m, 1);
+  else if (k === 'arrowleft' || k === 'arrowright') {
+    keyAim ??= { angle: 0, power: 0.5 };
+    keyAim.angle = Math.max(-1.2, Math.min(1.2, keyAim.angle + (k === 'arrowleft' ? -turn : turn) * (e.shiftKey ? 0.25 : 1)));
+  } else if (k === 'arrowup' || k === 'arrowdown') {
+    keyAim ??= { angle: 0, power: 0.5 };
+    keyAim.power = Math.max(0.05, Math.min(1, keyAim.power + (k === 'arrowup' ? 0.04 : -0.04) * (e.shiftKey ? 0.25 : 1)));
+  } else if ((k === ' ' || k === 'enter') && keyAim) {
+    const v = keyAimView(m);
+    keyAim = null;
+    if (v) flick(m, v.dx, v.dy, v.power);
+  } else return;
+  e.preventDefault();
+});
 
 // ---------- Main loop ----------
 
@@ -310,7 +379,7 @@ function frame(now: number) {
   }
   const shown = m ?? idle;
   if (m) {
-    const showAim = m.phase === 'aim' ? aim : null;
+    const showAim = m.phase === 'aim' ? (aim ?? (keyAim && humanTurn(m) ? keyAimView(m) : null)) : null;
     renderer.render(m, showAim, viewOwner, dt);
   } else {
     renderIdle(dt);
@@ -434,6 +503,7 @@ function handleEvents(m: Match) {
         hudDirty = true;
         break;
       case 'turn':
+        keyAim = null;
         hudDirty = true;
         later(() => turnBanner(m), 900);
         break;
@@ -474,7 +544,29 @@ function updateHud() {
       <button class="tool" id="btnView" aria-label="Trocar visão">${renderer.kind === '2d' ? ICON.cube : ICON.flat}<small>${renderer.kind === '2d' ? '3D' : '2D'}</small></button>
       <button class="tool" id="btnPause" aria-label="Pausa">${ICON.pause}</button>
     </div>
+    <div class="nudge">
+      <button class="tool" id="nudgeL" aria-label="Mover para a esquerda">◀</button>
+      <button class="tool" id="nudgeR" aria-label="Mover para a direita">▶</button>
+    </div>
     <div class="hint">${hintText(m)}</div>`;
+  hud.classList.toggle('cpu', m.cpu[m.turn] || m.phase === 'over');
+  for (const [id, dir] of [
+    ['#nudgeL', -1],
+    ['#nudgeR', 1],
+  ] as const) {
+    const b = hud.querySelector<HTMLButtonElement>(id)!;
+    let rep = 0;
+    const stop = () => clearInterval(rep);
+    b.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      if (!match) return;
+      nudgePiece(match, dir);
+      rep = window.setInterval(() => match && nudgePiece(match, dir), 70);
+    });
+    b.addEventListener('pointerup', stop);
+    b.addEventListener('pointerleave', stop);
+    b.addEventListener('pointercancel', stop);
+  }
   hud.querySelector('#btnView')!.addEventListener('click', () => {
     sfx.click();
     void setView(renderer.kind === '2d' ? '3d' : '2d');
@@ -488,7 +580,8 @@ function updateHud() {
 function hintText(m: Match) {
   if (m.phase === 'over') return '';
   if (m.cpu[m.turn]) return 'O computador está mirando...';
-  return `<b>${esc(m.names[m.turn])}</b>: puxe para trás e solte!`;
+  if (finePointer) return `<b>${esc(m.names[m.turn])}</b>: clique, puxe para trás e solte`;
+  return `<b>${esc(m.names[m.turn])}</b>: puxe para trás em qualquer lugar e solte!`;
 }
 
 let toastTimer = 0;
@@ -889,6 +982,13 @@ function showPause() {
   paused = true;
   showScreen(
     `<h2>Pausa</h2>
+     <div class="controls">
+       <p><b>Mouse ou dedo:</b> aperte em qualquer lugar, puxe para trás e solte. Quanto mais puxa, mais forte.</p>
+       <p><b>Trocar boneco:</b> toque em outro boneco do seu time.</p>
+       <p><b>Mover para o lado:</b> botões ◀ ▶ ou <kbd>A</kbd> <kbd>D</kbd></p>
+       <p><b>Mirar no teclado:</b> <kbd>←</kbd> <kbd>→</kbd> direção, <kbd>↑</kbd> <kbd>↓</kbd> força, <kbd>Espaço</kbd> peteleco. <kbd>Shift</kbd> deixa mais fino.</p>
+       <p><b>Desistir da mira:</b> <kbd>Esc</kbd> ou botão direito.</p>
+     </div>
      ${missRulePicker()}
      <button class="big" id="resume">Continuar</button>
      <button class="small" id="restart">Recomeçar</button>
@@ -1025,6 +1125,15 @@ void boot();
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__peteleco = {
     start: (n: number) => startSolo(n),
+    state: () => ({ phase: match?.phase, turn: match?.turn, sel: getPiece(match!, match?.selected ?? null)?.tx, keyAim, aim, view: match && keyAimView(match) }),
+    tick: (secs: number) => {
+      // Advance the game without waiting for animation frames (background tabs don't get them).
+      for (let t = 0; t < secs && match; t += 1 / 60) step(match, 1 / 60);
+      if (match) handleEvents(match);
+    },
+    draw: (frames = 10) => {
+      for (let i = 0; i < frames && match; i++) renderer.render(match, null, viewOwner, 0.5);
+    },
     view: (k: '2d' | '3d') => setView(k),
     finish(winner: Owner, shots = 4) {
       if (!match) return;

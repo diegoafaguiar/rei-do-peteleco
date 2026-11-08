@@ -4,9 +4,12 @@ Jogo de peteleco de mesa para jogar no navegador (computador ou celular).
 
 ## Como jogar
 
-- Puxe o boneco que está na linha tracejada para trás e solte. Quanto mais puxar, mais forte o peteleco.
+- Aperte em qualquer lugar da tela, puxe para trás (para longe de onde quer acertar) e solte.
+  Quanto mais puxar, mais forte o peteleco. Funciona igual com mouse e com o dedo.
 - Toque em outro boneco da sua fila para usar ele no lugar.
-- Toque perto da linha tracejada para mover o boneco para os lados antes de mirar.
+- Mova o boneco para os lados com os botões ◀ ▶ (ou `A`/`D` no teclado).
+- No teclado também dá para mirar: `←`/`→` direção, `↑`/`↓` força, `Espaço` dá o peteleco,
+  `Shift` deixa o ajuste mais fino e `Esc` cancela.
 - Derrubou bonecos do outro time? Eles passam para o seu time.
 - Errou? Depende da regra escolhida: o boneco volta pra fila ou é perdido.
 - Ganha quem deixar o outro sem nenhum boneco.

@@ -1088,3 +1088,67 @@ button:disabled {
   flex: 0 0 auto;
   padding: 8px 12px;
 }
+
+/* ---------- Controls ---------- */
+
+#stage.aiming {
+  cursor: grabbing !important;
+}
+
+#hud .nudge {
+  position: absolute;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  left: 8px;
+  right: 8px;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
+#hud .hint {
+  max-width: calc(100% - 140px);
+}
+#hud .nudge .tool {
+  pointer-events: auto;
+  width: 52px;
+  height: 52px;
+  font-size: 20px;
+  touch-action: none;
+}
+#hud.cpu .nudge {
+  display: none;
+}
+
+#hud .hint kbd {
+  display: inline-block;
+  min-width: 20px;
+  margin: 0 1px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: #efe6ff;
+  box-shadow: 0 2px 0 #c9b8f0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.controls {
+  text-align: left;
+  background: #f6f0ff;
+  border-radius: 18px;
+  padding: 8px 14px;
+  font-size: 14px;
+}
+.controls p {
+  margin: 4px 0;
+}
+.controls kbd {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 2px 0 #c9b8f0;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+}
